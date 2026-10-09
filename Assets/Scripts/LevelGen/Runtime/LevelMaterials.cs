@@ -35,6 +35,60 @@ namespace LevelGen.Unity
 
         readonly Dictionary<LightTint, Material> emissive = new Dictionary<LightTint, Material>();
 
+        // ---------------------------------------------------------------- lifetime
+        //
+        // LEAK FIX: one LevelMaterials instance is owned by one LevelBuilder and lives for the builder's whole
+        // lifetime, not for one build. Every material it creates with `new Material` is cached in a slot below
+        // and recorded in `created`; EnsureAll only fills slots that are empty, so a rebuild allocates ZERO
+        // materials. The builder destroys everything in `created` from OnDestroy (see DestroyCreated).
+        //
+        // Materials assigned from the profile (the floor/wall/corridor/ceiling overrides) and materials inside
+        // teammate prefabs are ASSETS: they are never recorded here and never destroyed.
+
+        readonly List<Material> created = new List<Material>();
+
+        // Generated defaults, kept apart from the public fields so that clearing a profile override falls back
+        // to the cached default instead of allocating a new one.
+        Material genFloor, genWall, genCorridorFloor, genCeiling;
+
+        /// <summary>How many materials this instance has created since it was constructed. For the build log.</summary>
+        public int CreatedCount => created.Count;
+
+        /// <summary>
+        /// Destroy every material this instance created (NOT profile overrides or prefab materials) and forget
+        /// them, so the next EnsureAll rebuilds the cache. Called from LevelBuilder.OnDestroy.
+        /// </summary>
+        public void DestroyCreated(bool immediate)
+        {
+            for (int i = 0; i < created.Count; i++)
+            {
+                Material m = created[i];
+                if (m == null) continue;
+                if (immediate) Object.DestroyImmediate(m);
+                else Object.Destroy(m);
+            }
+            created.Clear();
+            emissive.Clear();
+
+            genFloor = genWall = genCorridorFloor = genCeiling = null;
+            MattressWhite = MetalGreyBlue = DarkWood = Laminate = DarkDetail = null;
+            FixtureBody = SpawnMarker = KeyMarker = null;
+            Floor = Wall = CorridorFloor = Ceiling = null;
+        }
+
+        /// <summary>
+        /// Return the material in <paramref name="slot"/>, creating and recording it on first use. The
+        /// `slot != null` test uses Unity's Object comparison, so a slot whose material was destroyed
+        /// out from under us is treated as empty and refilled.
+        /// </summary>
+        Material Cached(ref Material slot, string name, Color color, float smoothness)
+        {
+            if (slot != null) return slot;
+            slot = Make(name, color, smoothness);
+            created.Add(slot);
+            return slot;
+        }
+
         // ---------------------------------------------------------------- URP shader / property ids
 
         static readonly int BaseColorId  = Shader.PropertyToID("_BaseColor");
@@ -94,31 +148,41 @@ namespace LevelGen.Unity
             m.EnableKeyword("_EMISSION");
             if (m.HasProperty(EmissionId)) m.SetColor(EmissionId, c * 1.6f);
             emissive[tint] = m;
+            created.Add(m);
             return m;
         }
 
+        /// <summary>
+        /// Point the public fields at the right materials for this build. Idempotent and allocation-free after
+        /// the first call: the generated defaults are cached per builder, so rebuilding a level 100 times
+        /// creates 12 materials in total, not 1200.
+        /// </summary>
         public void EnsureAll(Material floorOverride, Material wallOverride, Material corridorOverride,
                               Material ceilingOverride)
         {
-            Floor         = floorOverride    != null ? floorOverride    : Make("GenFloor",    new Color(0.45f, 0.45f, 0.42f), 0.35f);
-            Wall          = wallOverride     != null ? wallOverride     : Make("GenWall",     new Color(0.60f, 0.60f, 0.56f), 0.15f);
-            CorridorFloor = corridorOverride != null ? corridorOverride : Make("GenCorridor", new Color(0.36f, 0.36f, 0.34f), 0.35f);
-            Ceiling       = ceilingOverride  != null ? ceilingOverride  : Make("GenCeiling",  new Color(0.30f, 0.30f, 0.30f), 0.10f);
+            Floor         = floorOverride    != null ? floorOverride    : Cached(ref genFloor,        "GenFloor",    new Color(0.45f, 0.45f, 0.42f), 0.35f);
+            Wall          = wallOverride     != null ? wallOverride     : Cached(ref genWall,         "GenWall",     new Color(0.60f, 0.60f, 0.56f), 0.15f);
+            CorridorFloor = corridorOverride != null ? corridorOverride : Cached(ref genCorridorFloor, "GenCorridor", new Color(0.36f, 0.36f, 0.34f), 0.35f);
+            Ceiling       = ceilingOverride  != null ? ceilingOverride  : Cached(ref genCeiling,      "GenCeiling",  new Color(0.30f, 0.30f, 0.30f), 0.10f);
 
-            MattressWhite = Make("GenMattress", new Color(0.82f, 0.82f, 0.78f), 0.12f);
-            MetalGreyBlue = Make("GenMetal",    new Color(0.48f, 0.53f, 0.58f), 0.45f);
-            DarkWood      = Make("GenWood",     new Color(0.24f, 0.17f, 0.12f), 0.20f);
-            Laminate      = Make("GenLaminate", new Color(0.74f, 0.72f, 0.66f), 0.30f);
-            DarkDetail    = Make("GenDetail",   new Color(0.13f, 0.13f, 0.14f), 0.20f);
-            FixtureBody   = Make("GenFixture",  new Color(0.22f, 0.22f, 0.24f), 0.25f);
+            Cached(ref MattressWhite, "GenMattress", new Color(0.82f, 0.82f, 0.78f), 0.12f);
+            Cached(ref MetalGreyBlue, "GenMetal",    new Color(0.48f, 0.53f, 0.58f), 0.45f);
+            Cached(ref DarkWood,      "GenWood",     new Color(0.24f, 0.17f, 0.12f), 0.20f);
+            Cached(ref Laminate,      "GenLaminate", new Color(0.74f, 0.72f, 0.66f), 0.30f);
+            Cached(ref DarkDetail,    "GenDetail",   new Color(0.13f, 0.13f, 0.14f), 0.20f);
+            Cached(ref FixtureBody,   "GenFixture",  new Color(0.22f, 0.22f, 0.24f), 0.25f);
 
-            SpawnMarker = Make("GenSpawnMarker", new Color(0.2f, 1f, 0.3f), 0f);
-            KeyMarker   = Make("GenKeyMarker",   new Color(1f, 0.9f, 0.2f), 0f);
+            Cached(ref SpawnMarker, "GenSpawnMarker", new Color(0.2f, 1f, 0.3f), 0f);
+            Cached(ref KeyMarker,   "GenKeyMarker",   new Color(1f, 0.9f, 0.2f), 0f);
         }
 
         /// <summary>
         /// An unlit-textured URP Lit (or Standard) material. <paramref name="smoothness"/> goes to _Smoothness
         /// under URP and _Glossiness under the built-in pipeline; both names mean the same 0..1 value.
+        ///
+        /// This is the RAW factory: the material it returns is untracked, so a caller outside this class owns
+        /// it and must destroy it. Inside a level build, go through Cached / Emissive instead so the builder
+        /// frees it.
         /// </summary>
         public static Material Make(string name, Color color, float smoothness)
         {

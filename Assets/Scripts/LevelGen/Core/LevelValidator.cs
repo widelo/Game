@@ -232,6 +232,8 @@ namespace LevelGen.Core
         {
             int n = layout.Rooms.Count;
             int darkKeyRooms = 0;
+            // Clamped once: every prop-gap check (rooms AND corridors) uses the same required gap.
+            double propSpacing = Math.Max(s.PropSpacing, 0.0);
 
             for (int i = 0; i < n; i++)
             {
@@ -266,8 +268,11 @@ namespace LevelGen.Core
                     {
                         if (r.Props[b] == null) continue;
                         double gap = RoomFurnisher.BoxGap(box, RoomFurnisher.PropBox(r.Props[b]));
-                        if (gap < s.PropSpacing - 1e-6)
-                            errors.Add($"Rooms[{i}].Props[{a}] and Props[{b}] are only {gap.ToString("R", ci)} m apart (PropSpacing {s.PropSpacing})");
+                        // A negative PropSpacing is never a licence to overlap: the required gap is clamped at 0.
+                        if (gap < propSpacing - 1e-6)
+                            errors.Add($"Rooms[{i}].Props[{a}] and Props[{b}] are only {gap.ToString("R", ci)} m apart (PropSpacing {propSpacing})");
+                        if (gap < -1e-6)
+                            errors.Add($"Rooms[{i}].Props[{a}] and Props[{b}] overlap by {(-gap).ToString("R", ci)} m");
                     }
 
                     // Lane rule: a clear walking lane from every mouth to the room centre.
@@ -376,8 +381,11 @@ namespace LevelGen.Core
                     for (int b = a + 1; b < c.Props.Count; b++)
                     {
                         if (c.Props[b] == null) continue;
-                        if (RoomFurnisher.BoxGap(box, RoomFurnisher.PropBox(c.Props[b])) < -1e-6)
-                            errors.Add($"Corridors[{i}].Props[{a}] and Props[{b}] overlap");
+                        double cgap = RoomFurnisher.BoxGap(box, RoomFurnisher.PropBox(c.Props[b]));
+                        if (cgap < propSpacing - 1e-6)
+                            errors.Add($"Corridors[{i}].Props[{a}] and Props[{b}] are only {cgap.ToString("R", ci)} m apart (PropSpacing {propSpacing})");
+                        if (cgap < -1e-6)
+                            errors.Add($"Corridors[{i}].Props[{a}] and Props[{b}] overlap by {(-cgap).ToString("R", ci)} m");
                     }
 
                     // the walkway on one side of the prop must stay >= CorridorWalkway

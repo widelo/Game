@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using LevelGen.Core;
 using LevelGen.Unity;
@@ -21,12 +22,22 @@ namespace Game.Editor
     ///    and where it is placed the teammate's prefab was instantiated and a generated floor exists under it;
     ///  - the per-seed line reports template usage so a template that silently never gets picked is visible.
     ///
+    /// v4 additions:
+    ///  - the per-seed body is extracted into VerifySeed, so the 20-seed smoke run and the long stress sweep
+    ///    apply byte-for-byte the same checks;
+    ///  - BuildLevelsStress() runs LEVELGEN_SEEDS (default 200) seeds and reports aggregates instead of a
+    ///    line per seed.
+    ///
     /// Run: Unity.exe -batchmode -nographics -quit -projectPath ... -executeMethod Game.Editor.HeadlessVerify.BuildLevels
+    ///      Unity.exe -batchmode -nographics -quit -projectPath ... -executeMethod Game.Editor.HeadlessVerify.BuildLevelsStress
     /// Exits with code 1 on any failure. Inspector callers use Run(false) so the editor survives.
     /// </summary>
     public static class HeadlessVerify
     {
         const int SeedCount = 20;
+
+        /// <summary>Default seed count for the stress sweep, overridable with the LEVELGEN_SEEDS env var.</summary>
+        const int DefaultStressSeeds = 200;
 
         /// <summary>Walkable surfaces are all at y=0, so any NavMesh vertex above this is a bake on furniture or a ceiling.</summary>
         const float MaxNavVertexY = 0.5f;
@@ -39,11 +50,38 @@ namespace Game.Editor
         [MenuItem("CS462/Headless Verify (20 seeds)")]
         public static void BuildLevels() { Run(true); }
 
-        /// <summary>Returns true when every seed passed. <paramref name="exitOnDone"/> false keeps the editor alive.</summary>
-        public static bool Run(bool exitOnDone)
+        [MenuItem("CS462/Headless Verify - Stress (LEVELGEN_SEEDS, default 200)")]
+        public static void BuildLevelsStress() { RunStress(true); }
+
+        /// <summary>Existing signature, preserved: the 20-seed sweep starting at seed 0.</summary>
+        public static bool Run(bool exitOnDone) { return Run(exitOnDone, SeedCount, 0); }
+
+        // ------------------------------------------------------------------ per-seed result
+
+        /// <summary>Everything one seed contributes to the log line and to the stress aggregates.</summary>
+        struct SeedStats
         {
-            EditorSceneManager.OpenScene("Assets/Scenes/Main.unity", OpenSceneMode.Single);
-            var builder = Object.FindAnyObjectByType<LevelBuilder>();
+            public bool LayoutOk;
+            public int Rooms, Corridors, Ellipses;
+            public int Props, LayoutProps, Lights, LayoutLights;
+            public int Renderers, NavVerts, PrefabRooms;
+            public float NavMaxY;
+            public long BuildMs;
+            public int WidenedRooms;
+            public int AuthoringWarnings;
+            public string TemplateUsage;
+            public Dictionary<string, int> TemplateCounts;
+        }
+
+        // ------------------------------------------------------------------ the 20-seed smoke run
+
+        /// <summary>
+        /// Returns true when every seed passed. <paramref name="exitOnDone"/> false keeps the editor alive.
+        /// <paramref name="seedCount"/> seeds are built starting at <paramref name="firstSeed"/>.
+        /// </summary>
+        public static bool Run(bool exitOnDone, int seedCount, int firstSeed)
+        {
+            LevelBuilder builder = OpenMainScene();
             if (builder == null) return Fail("no LevelBuilder in Main.unity", exitOnDone);
 
             // Name of the prefab the TeammateRoom template points at, read from the asset so this verifier
@@ -53,103 +91,28 @@ namespace Game.Editor
             var failures = new List<string>();
             int prefabRoomCount = 0;   // rooms built from PrefabTemplateName, summed over every seed
 
-            for (int seed = 0; seed < SeedCount; seed++)
+            for (int i = 0; i < seedCount; i++)
             {
-                builder.Build(seed);
-                var layout = builder.CurrentLayout;
-                if (layout == null) { failures.Add($"seed {seed}: CurrentLayout null"); continue; }
+                int seed = firstSeed + i;
+                SeedStats s = VerifySeed(builder, seed, prefabName, failures);
+                prefabRoomCount += s.PrefabRooms;
+                if (!s.LayoutOk) continue;
 
-                foreach (var msg in LevelValidator.Validate(layout)) failures.Add($"seed {seed}: validator: {msg}");
-
-                CountContents(layout, out int layoutLights, out int layoutProps);
-
-                // ---- v3: the spawn room is a single-entrance dead end ----
-                CheckSpawnDoors(seed, layout, failures);
-
-                // ---- v2 scene content ----
-                var renderers = builder.transform.GetComponentsInChildren<MeshRenderer>(true);
-                if (!renderers.Any(r => r.name.Contains("Ceiling")))
-                    failures.Add($"seed {seed}: no MeshRenderer with \"Ceiling\" in its name");
-
-                int enabledLights = builder.transform.GetComponentsInChildren<Light>(true)
-                                           .Count(l => l.enabled && l.gameObject.activeInHierarchy);
-                if (enabledLights < layout.Rooms.Count)
-                    failures.Add($"seed {seed}: {enabledLights} enabled lights < {layout.Rooms.Count} rooms");
-
-                int propObjects = builder.transform.GetComponentsInChildren<Transform>(true)
-                                         .Count(t => t.name.StartsWith("Prop_"));
-                if (propObjects != layoutProps)
-                    failures.Add($"seed {seed}: {propObjects} Prop_* objects != {layoutProps} layout props");
-
-                // ---- v3: prefab rooms reached the scene ----
-                foreach (var room in layout.Rooms)
-                {
-                    if (room.TemplateName != PrefabTemplateName) continue;
-                    prefabRoomCount++;
-                    CheckPrefabRoom(seed, builder, room, prefabName, failures);
-                }
-
-                // ---- NavMesh ----
-                var tri = NavMesh.CalculateTriangulation();
-                if (tri.vertices.Length == 0) { failures.Add($"seed {seed}: NavMesh has 0 vertices"); continue; }
-
-                float maxY = tri.vertices.Max(v => v.y);
-                if (maxY > MaxNavVertexY)
-                    failures.Add($"seed {seed}: NavMesh vertex at y={maxY:F2} > {MaxNavVertexY} (baked on a ceiling or furniture top)");
-
-                var spawn = builder.PlayerSpawnPoint;
-                if (!NavMesh.SamplePosition(spawn, out var spawnHit, 1.0f, NavMesh.AllAreas))
-                { failures.Add($"seed {seed}: spawn point not on NavMesh"); continue; }
-
-                var widened = new List<int>();
-                var authoredRooms = new List<string>();
-                foreach (var room in layout.Rooms)
-                {
-                    var target = builder.RoomWorldCenter(room.Id);
-                    // Rooms whose walls come from a hand-built prefab own their doorways: the generator cannot
-                    // cut openings into them, so until the prefab is authored with doors its interior may be
-                    // sealed. That is an authoring warning, not a generator failure (the room is a dead end by
-                    // template rule, so it never cuts off the rest of the level).
-                    if (room.Template != null && !room.Template.GenerateWalls)
-                    {
-                        var scratch = new List<string>();
-                        if (!CheckPath(seed, $"room {room.Id} ({room.TemplateName})", spawnHit.position, target, 1.5f, scratch, null))
-                            authoredRooms.Add($"room {room.Id} ({room.TemplateName}) interior not reachable - prefab needs a doorway on its corridor side");
-                        continue;
-                    }
-                    if (CheckPath(seed, $"room {room.Id} ({room.Shape},{room.Role},{room.Type},{room.TemplateName})",
-                                  spawnHit.position, target, 1.0f, failures, null))
-                        continue;
-                    // Props keep MouthClearance and room-centre clearance, so a centre miss means the
-                    // sample radius was just too tight (ellipse edge, prop skirt). Retry wider and report it.
-                    widened.Add(room.Id);
-                    CheckPath(seed, $"room {room.Id} (wide sample)", spawnHit.position, target, 1.5f, failures, null);
-                }
-                foreach (var c in layout.Corridors)
-                {
-                    var mid = LevelBuilder.ToWorld((c.Path[0] + c.Path[c.Path.Count - 1]) * 0.5);
-                    CheckPath(seed, $"corridor {c.Id} midpoint", spawnHit.position, mid, 1.0f, failures, failures);
-                }
-                if (widened.Count > 0)
-                    UnityEngine.Debug.LogWarning($"[HeadlessVerify] seed={seed} rooms needing a 1.5 m sample: {string.Join(",", widened)}");
-                if (authoredRooms.Count > 0)
-                    UnityEngine.Debug.LogWarning($"[HeadlessVerify] seed={seed} prefab authoring: {string.Join("; ", authoredRooms)}");
-
-                var spawnRoom = layout.SpawnRoom;
-                UnityEngine.Debug.Log($"[HeadlessVerify] seed={seed} rooms={layout.Rooms.Count} corridors={layout.Corridors.Count} " +
-                          $"ellipses={layout.Rooms.Count(r => r.Shape == RoomShape.Ellipse)} " +
-                          $"props={propObjects}/{layoutProps} lights={enabledLights}/{layoutLights} " +
-                          $"navVerts={tri.vertices.Length} navMaxY={maxY:F2} renderers={renderers.Length} " +
-                          $"spawnDoors={(spawnRoom != null ? spawnRoom.DoorCount.ToString() : "-")} " +
-                          $"templates={{{TemplateUsage(layout)}}}");
+                UnityEngine.Debug.Log($"[HeadlessVerify] seed={seed} rooms={s.Rooms} corridors={s.Corridors} " +
+                          $"ellipses={s.Ellipses} " +
+                          $"props={s.Props}/{s.LayoutProps} lights={s.Lights}/{s.LayoutLights} " +
+                          $"navVerts={s.NavVerts} navMaxY={s.NavMaxY:F2} renderers={s.Renderers} " +
+                          $"buildMs={s.BuildMs} " +
+                          $"spawnDoors={SpawnDoors(builder)} " +
+                          $"templates={{{s.TemplateUsage}}}");
             }
 
             // The prefab-room template existing but never being placed is the quiet failure mode of the whole
             // templates feature, so it is an error rather than a warning.
             UnityEngine.Debug.Log($"[HeadlessVerify] rooms built from template \"{PrefabTemplateName}\" across " +
-                                  $"{SeedCount} seeds: {prefabRoomCount}");
+                                  $"{seedCount} seeds: {prefabRoomCount}");
             if (prefabRoomCount < 1)
-                failures.Add($"template \"{PrefabTemplateName}\" was never placed in {SeedCount} seeds " +
+                failures.Add($"template \"{PrefabTemplateName}\" was never placed in {seedCount} seeds " +
                              "(is it in the profile's templates list, and does its footprint fit a lattice cell?)");
 
             if (failures.Count > 0)
@@ -158,28 +121,279 @@ namespace Game.Editor
                 if (exitOnDone) EditorApplication.Exit(1);
                 return false;
             }
-            // Smoke-test the overhead debug view: hides every ceiling, restores every ceiling.
-            var overhead = Object.FindAnyObjectByType<Game.Debug.OverheadDebugView>();
-            if (overhead != null)
-            {
-                int ceilings = builder.GetComponentsInChildren<Renderer>().Count(r => r.gameObject.name.StartsWith("Ceiling"));
-                overhead.Enter();
-                int visibleWhileOverhead = builder.GetComponentsInChildren<Renderer>().Count(r => r.gameObject.name.StartsWith("Ceiling") && r.enabled);
-                bool fogOff = !RenderSettings.fog;
-                overhead.Exit();
-                int visibleAfter = builder.GetComponentsInChildren<Renderer>().Count(r => r.gameObject.name.StartsWith("Ceiling") && r.enabled);
-                UnityEngine.Debug.Log($"[HeadlessVerify] overhead: ceilings={ceilings} hiddenOk={visibleWhileOverhead == 0} fogOff={fogOff} restoredOk={visibleAfter == ceilings}");
-                if (visibleWhileOverhead != 0 || !fogOff || visibleAfter != ceilings)
-                {
-                    UnityEngine.Debug.LogError("[HeadlessVerify] FAILED overhead view toggle");
-                    if (exitOnDone) EditorApplication.Exit(1);
-                    return false;
-                }
-            }
-            else UnityEngine.Debug.LogWarning("[HeadlessVerify] no OverheadDebugView in scene (regenerate Main.unity)");
+            if (!CheckOverheadView(builder, exitOnDone)) return false;
 
-            UnityEngine.Debug.Log($"[HeadlessVerify] PASSED {SeedCount} seeds");
+            UnityEngine.Debug.Log($"[HeadlessVerify] PASSED {seedCount} seeds");
             if (exitOnDone && Application.isBatchMode) EditorApplication.Exit(0);
+            return true;
+        }
+
+        // ------------------------------------------------------------------ the stress sweep
+
+        /// <summary>
+        /// Long sweep for CI: LEVELGEN_SEEDS (default 200) seeds through exactly the same per-seed checks as
+        /// <see cref="Run(bool,int,int)"/>, but reporting one summary line per 20 seeds plus totals instead of
+        /// a line per seed. Exits 1 on any failure.
+        /// </summary>
+        public static bool RunStress(bool exitOnDone)
+        {
+            int seedCount = ReadSeedCountFromEnv();
+            UnityEngine.Debug.Log($"[HeadlessVerify] STRESS start seeds={seedCount} (LEVELGEN_SEEDS)");
+
+            LevelBuilder builder = OpenMainScene();
+            if (builder == null) return StressFail("no LevelBuilder in Main.unity", exitOnDone);
+
+            string prefabName = ReadTemplatePrefabName(TeammateTemplateAssetPath);
+
+            var failures = new List<string>();
+            var templateTotals = new Dictionary<string, int>();
+
+            long totalBuildMs = 0, maxBuildMs = 0;
+            int minProps = int.MaxValue, maxProps = 0;
+            int minLights = int.MaxValue, maxLights = 0;
+            int prefabRoomCount = 0, authoringWarnings = 0, widenedRooms = 0, okSeeds = 0;
+
+            // Per-chunk accumulators, reset every 20 seeds.
+            long chunkBuildMs = 0;
+            int chunkSeeds = 0, chunkFailuresAtStart = 0;
+
+            for (int i = 0; i < seedCount; i++)
+            {
+                if (i % 20 == 0) { chunkBuildMs = 0; chunkSeeds = 0; chunkFailuresAtStart = failures.Count; }
+
+                SeedStats s = VerifySeed(builder, i, prefabName, failures);
+                prefabRoomCount += s.PrefabRooms;
+                authoringWarnings += s.AuthoringWarnings;
+                widenedRooms += s.WidenedRooms;
+                totalBuildMs += s.BuildMs;
+                chunkBuildMs += s.BuildMs;
+                chunkSeeds++;
+                if (s.BuildMs > maxBuildMs) maxBuildMs = s.BuildMs;
+
+                if (s.LayoutOk)
+                {
+                    okSeeds++;
+                    if (s.LayoutProps < minProps) minProps = s.LayoutProps;
+                    if (s.LayoutProps > maxProps) maxProps = s.LayoutProps;
+                    if (s.LayoutLights < minLights) minLights = s.LayoutLights;
+                    if (s.LayoutLights > maxLights) maxLights = s.LayoutLights;
+                    if (s.TemplateCounts != null)
+                        foreach (var kv in s.TemplateCounts)
+                        {
+                            templateTotals.TryGetValue(kv.Key, out int n);
+                            templateTotals[kv.Key] = n + kv.Value;
+                        }
+                }
+
+                bool lastSeed = i == seedCount - 1;
+                if ((i + 1) % 20 == 0 || lastSeed)
+                    UnityEngine.Debug.Log($"[HeadlessVerify] STRESS seeds {i + 1 - chunkSeeds}-{i}: " +
+                        $"avgBuildMs={(chunkSeeds > 0 ? chunkBuildMs / (double)chunkSeeds : 0):F1} " +
+                        $"newFailures={failures.Count - chunkFailuresAtStart} " +
+                        $"runningFailures={failures.Count}");
+            }
+
+            if (minProps == int.MaxValue) minProps = 0;
+            if (minLights == int.MaxValue) minLights = 0;
+
+            // NOTE: the NavMesh bake happens inside LevelBuilder.Build(), which this verifier may not modify,
+            // so the bake cannot be timed separately from the rest of the build. buildMs is the whole
+            // generate + geometry + bake pass; it is the only timing a Stopwatch around Build can give.
+            UnityEngine.Debug.Log($"[HeadlessVerify] STRESS totals: seeds={seedCount} okSeeds={okSeeds} " +
+                $"avgBuildMs={(seedCount > 0 ? totalBuildMs / (double)seedCount : 0):F1} maxBuildMs={maxBuildMs} " +
+                $"(navmesh bake is included in buildMs and is not separable from outside LevelBuilder) " +
+                $"props=[{minProps}..{maxProps}] lights=[{minLights}..{maxLights}] " +
+                $"prefabRooms={prefabRoomCount} prefabAuthoringWarnings={authoringWarnings} " +
+                $"widenedSampleRooms={widenedRooms} " +
+                $"templates={{{string.Join(", ", templateTotals.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key).Select(kv => $"{kv.Key} x{kv.Value}"))}}}");
+
+            if (prefabRoomCount < 1)
+                failures.Add($"template \"{PrefabTemplateName}\" was never placed in {seedCount} seeds");
+
+            if (failures.Count > 0)
+            {
+                UnityEngine.Debug.LogError($"[HeadlessVerify] STRESS FAILED {seedCount} seeds, " +
+                                           $"{failures.Count} failures\n" + string.Join("\n", failures));
+                if (exitOnDone) EditorApplication.Exit(1);
+                return false;
+            }
+            if (!CheckOverheadView(builder, exitOnDone)) return false;
+
+            UnityEngine.Debug.Log($"[HeadlessVerify] STRESS PASSED {seedCount} seeds");
+            if (exitOnDone && Application.isBatchMode) EditorApplication.Exit(0);
+            return true;
+        }
+
+        static int ReadSeedCountFromEnv()
+        {
+            string raw = System.Environment.GetEnvironmentVariable("LEVELGEN_SEEDS");
+            if (!string.IsNullOrEmpty(raw) && int.TryParse(raw.Trim(), out int n) && n > 0) return n;
+            if (!string.IsNullOrEmpty(raw))
+                UnityEngine.Debug.LogWarning($"[HeadlessVerify] LEVELGEN_SEEDS=\"{raw}\" is not a positive " +
+                                             $"integer; using {DefaultStressSeeds}");
+            return DefaultStressSeeds;
+        }
+
+        static LevelBuilder OpenMainScene()
+        {
+            EditorSceneManager.OpenScene("Assets/Scenes/Main.unity", OpenSceneMode.Single);
+            return Object.FindAnyObjectByType<LevelBuilder>();
+        }
+
+        static string SpawnDoors(LevelBuilder builder)
+        {
+            Room spawn = builder.CurrentLayout != null ? builder.CurrentLayout.SpawnRoom : null;
+            return spawn != null ? spawn.DoorCount.ToString() : "-";
+        }
+
+        static bool StressFail(string msg, bool exitOnDone)
+        {
+            UnityEngine.Debug.LogError("[HeadlessVerify] STRESS FAILED: " + msg);
+            if (exitOnDone) EditorApplication.Exit(1);
+            return false;
+        }
+
+        // ------------------------------------------------------------------ one seed, end to end
+
+        /// <summary>
+        /// Builds one seed and applies every check. Appends to <paramref name="failures"/>; the returned stats
+        /// are what the two callers turn into their log lines. LayoutOk false means the build produced nothing
+        /// usable and the rest of the stats are meaningless.
+        /// </summary>
+        static SeedStats VerifySeed(LevelBuilder builder, int seed, string prefabName, List<string> failures)
+        {
+            var stats = new SeedStats();
+
+            var sw = Stopwatch.StartNew();
+            builder.Build(seed);
+            sw.Stop();
+            stats.BuildMs = sw.ElapsedMilliseconds;
+
+            LevelLayout layout = builder.CurrentLayout;
+            if (layout == null) { failures.Add($"seed {seed}: CurrentLayout null"); return stats; }
+
+            foreach (var msg in LevelValidator.Validate(layout)) failures.Add($"seed {seed}: validator: {msg}");
+
+            CountContents(layout, out int layoutLights, out int layoutProps);
+            stats.LayoutLights = layoutLights;
+            stats.LayoutProps = layoutProps;
+            stats.Rooms = layout.Rooms.Count;
+            stats.Corridors = layout.Corridors.Count;
+            stats.Ellipses = layout.Rooms.Count(r => r.Shape == RoomShape.Ellipse);
+            stats.TemplateUsage = TemplateUsage(layout);
+            stats.TemplateCounts = layout.Rooms
+                .GroupBy(r => string.IsNullOrEmpty(r.TemplateName) ? "(none)" : r.TemplateName)
+                .ToDictionary(g => g.Key, g => g.Count());
+
+            // ---- v3: the spawn room is a single-entrance dead end ----
+            CheckSpawnDoors(seed, layout, failures);
+
+            // ---- v2 scene content ----
+            var renderers = builder.transform.GetComponentsInChildren<MeshRenderer>(true);
+            stats.Renderers = renderers.Length;
+            if (!renderers.Any(r => r.name.Contains("Ceiling")))
+                failures.Add($"seed {seed}: no MeshRenderer with \"Ceiling\" in its name");
+
+            int enabledLights = builder.transform.GetComponentsInChildren<Light>(true)
+                                       .Count(l => l.enabled && l.gameObject.activeInHierarchy);
+            stats.Lights = enabledLights;
+            if (enabledLights < layout.Rooms.Count)
+                failures.Add($"seed {seed}: {enabledLights} enabled lights < {layout.Rooms.Count} rooms");
+
+            int propObjects = builder.transform.GetComponentsInChildren<Transform>(true)
+                                     .Count(t => t.name.StartsWith("Prop_"));
+            stats.Props = propObjects;
+            if (propObjects != layoutProps)
+                failures.Add($"seed {seed}: {propObjects} Prop_* objects != {layoutProps} layout props");
+
+            // ---- v3: prefab rooms reached the scene ----
+            foreach (var room in layout.Rooms)
+            {
+                if (room.TemplateName != PrefabTemplateName) continue;
+                stats.PrefabRooms++;
+                CheckPrefabRoom(seed, builder, room, prefabName, failures);
+            }
+
+            // ---- NavMesh ----
+            var tri = NavMesh.CalculateTriangulation();
+            if (tri.vertices.Length == 0) { failures.Add($"seed {seed}: NavMesh has 0 vertices"); return stats; }
+            stats.NavVerts = tri.vertices.Length;
+
+            float maxY = tri.vertices.Max(v => v.y);
+            stats.NavMaxY = maxY;
+            if (maxY > MaxNavVertexY)
+                failures.Add($"seed {seed}: NavMesh vertex at y={maxY:F2} > {MaxNavVertexY} (baked on a ceiling or furniture top)");
+
+            var spawn = builder.PlayerSpawnPoint;
+            if (!NavMesh.SamplePosition(spawn, out var spawnHit, 1.0f, NavMesh.AllAreas))
+            { failures.Add($"seed {seed}: spawn point not on NavMesh"); return stats; }
+
+            var widened = new List<int>();
+            var authoredRooms = new List<string>();
+            foreach (var room in layout.Rooms)
+            {
+                var target = builder.RoomWorldCenter(room.Id);
+                // Rooms whose walls come from a hand-built prefab own their doorways: the generator cannot
+                // cut openings into them, so until the prefab is authored with doors its interior may be
+                // sealed. That is an authoring warning, not a generator failure (the room is a dead end by
+                // template rule, so it never cuts off the rest of the level).
+                if (room.Template != null && !room.Template.GenerateWalls)
+                {
+                    var scratch = new List<string>();
+                    if (!CheckPath(seed, $"room {room.Id} ({room.TemplateName})", spawnHit.position, target, 1.5f, scratch, null))
+                        authoredRooms.Add($"room {room.Id} ({room.TemplateName}) interior not reachable - prefab needs a doorway on its corridor side");
+                    continue;
+                }
+                if (CheckPath(seed, $"room {room.Id} ({room.Shape},{room.Role},{room.Type},{room.TemplateName})",
+                              spawnHit.position, target, 1.0f, failures, null))
+                    continue;
+                // Props keep MouthClearance and room-centre clearance, so a centre miss means the
+                // sample radius was just too tight (ellipse edge, prop skirt). Retry wider and report it.
+                widened.Add(room.Id);
+                CheckPath(seed, $"room {room.Id} (wide sample)", spawnHit.position, target, 1.5f, failures, null);
+            }
+            foreach (var c in layout.Corridors)
+            {
+                var mid = LevelBuilder.ToWorld((c.Path[0] + c.Path[c.Path.Count - 1]) * 0.5);
+                CheckPath(seed, $"corridor {c.Id} midpoint", spawnHit.position, mid, 1.0f, failures, failures);
+            }
+            stats.WidenedRooms = widened.Count;
+            stats.AuthoringWarnings = authoredRooms.Count;
+            if (widened.Count > 0)
+                UnityEngine.Debug.LogWarning($"[HeadlessVerify] seed={seed} rooms needing a 1.5 m sample: {string.Join(",", widened)}");
+            if (authoredRooms.Count > 0)
+                UnityEngine.Debug.LogWarning($"[HeadlessVerify] seed={seed} prefab authoring: {string.Join("; ", authoredRooms)}");
+
+            stats.LayoutOk = true;
+            return stats;
+        }
+
+        /// <summary>
+        /// Smoke-test the overhead debug view: hides every ceiling, restores every ceiling. Returns false (and
+        /// exits 1 when asked) on a failure, true when it passes or the scene has no OverheadDebugView.
+        /// </summary>
+        static bool CheckOverheadView(LevelBuilder builder, bool exitOnDone)
+        {
+            var overhead = Object.FindAnyObjectByType<Game.Debug.OverheadDebugView>();
+            if (overhead == null)
+            {
+                UnityEngine.Debug.LogWarning("[HeadlessVerify] no OverheadDebugView in scene (regenerate Main.unity)");
+                return true;
+            }
+
+            int ceilings = builder.GetComponentsInChildren<Renderer>().Count(r => r.gameObject.name.StartsWith("Ceiling"));
+            overhead.Enter();
+            int visibleWhileOverhead = builder.GetComponentsInChildren<Renderer>().Count(r => r.gameObject.name.StartsWith("Ceiling") && r.enabled);
+            bool fogOff = !RenderSettings.fog;
+            overhead.Exit();
+            int visibleAfter = builder.GetComponentsInChildren<Renderer>().Count(r => r.gameObject.name.StartsWith("Ceiling") && r.enabled);
+            UnityEngine.Debug.Log($"[HeadlessVerify] overhead: ceilings={ceilings} hiddenOk={visibleWhileOverhead == 0} fogOff={fogOff} restoredOk={visibleAfter == ceilings}");
+            if (visibleWhileOverhead != 0 || !fogOff || visibleAfter != ceilings)
+            {
+                UnityEngine.Debug.LogError("[HeadlessVerify] FAILED overhead view toggle");
+                if (exitOnDone) EditorApplication.Exit(1);
+                return false;
+            }
             return true;
         }
 

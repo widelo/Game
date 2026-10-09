@@ -104,7 +104,9 @@ namespace Game.Player
         void Move()
         {
             float dt = Time.deltaTime;
-            _grounded = _cc.isGrounded;
+            // CharacterController.isGrounded only reflects the LAST Move() and flickers frame to frame while
+            // resting on a surface. Back it up with a short sphere probe at the feet so the state is stable.
+            _grounded = _cc.isGrounded || ProbeGround();
             if (_slideCdLeft > 0f) _slideCdLeft -= dt;
 
             if (_grounded)
@@ -210,6 +212,16 @@ namespace Game.Player
                                               ~0, QueryTriggerInteraction.Ignore);
             _cc.enabled = wasEnabled;
             return !blocked;
+        }
+
+        bool ProbeGround()
+        {
+            // Feet sphere: centre just above the capsule bottom, cast down by skin width + a little slack.
+            float bottom = transform.position.y + _cc.center.y - _cc.height * 0.5f + _cc.radius;
+            var origin = new Vector3(transform.position.x, bottom, transform.position.z);
+            float dist = _cc.skinWidth + 0.1f;
+            // Our own capsule overlaps the start sphere, and SphereCast ignores colliders it starts inside.
+            return Physics.SphereCast(origin, _cc.radius * 0.95f, Vector3.down, out _, dist, ~0, QueryTriggerInteraction.Ignore);
         }
 
         /// <summary>Cursor capture. Public so a pause menu or the debug HUD can release the mouse.</summary>

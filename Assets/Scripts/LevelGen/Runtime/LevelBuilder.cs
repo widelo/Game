@@ -16,6 +16,13 @@
 //  * extension points for teammates: OnRoomBuilt / OnCorridorBuilt fire per element BEFORE the NavMesh bake,
 //    RoomObjects / CorridorObjects expose the holders, and LevelRoot is the single parent of everything.
 //  * materials are URP Lit (see LevelMaterials).
+//  * LEAK FIX: runtime-created Meshes and Materials are Unity Objects that are NOT collected when the
+//    GameObject referencing them is destroyed, so rebuilding leaked ~40 meshes and ~12 materials per Build.
+//    Now: every Mesh this component creates is tracked and destroyed by ClearLevel after the hierarchy goes;
+//    the shared material set and the unit primitive meshes are created once and reused by every build, and
+//    the materials are destroyed only in OnDestroy. Materials and meshes that belong to ASSETS (profile
+//    material overrides, anything inside a teammate's prefab) are never destroyed - we only ever destroy
+//    what we made with `new Mesh()` / `new Material()`.
 using System;
 using System.Collections.Generic;
 using LevelGen.Core;
@@ -136,6 +143,7 @@ namespace LevelGen.Unity
             ClearLevel();
 
             LevelGenProfile p = Profile;
+            int materialsBefore = mats.CreatedCount;
             LevelLayout layout = LevelGenerator.Generate(newSeed, p.ToSettings());
             CurrentLayout = layout;
 
@@ -182,7 +190,9 @@ namespace LevelGen.Unity
 
             Debug.Log($"[LevelBuilder] seed={newSeed} rooms={layout.Rooms.Count} " +
                       $"corridors={layout.Corridors.Count} props={propCount} lights={lightCount} " +
-                      $"prefabRooms={prefabRooms} navmesh={(navOk ? "ok" : "none")}");
+                      $"prefabRooms={prefabRooms} meshes={runtimeMeshes.Count} " +
+                      $"matsCreated={mats.CreatedCount - materialsBefore} " +
+                      $"navmesh={(navOk ? "ok" : "none")}");
 
             OnLevelBuilt?.Invoke(layout);
         }
@@ -206,6 +216,14 @@ namespace LevelGen.Unity
         readonly Dictionary<int, GameObject> roomObjects = new Dictionary<int, GameObject>();
         readonly Dictionary<int, GameObject> corridorObjects = new Dictionary<int, GameObject>();
 
+        /// <summary>
+        /// Every Mesh created for the level currently in the scene (room/corridor floors, walls and ceilings
+        /// from RoomMeshBuilder). Owned by this component and destroyed by ClearLevel. The shared unit meshes
+        /// in GenPrimitives are NOT in here: they are process-wide, built once on first use and reused by
+        /// every build and every builder, so they cost nothing per rebuild and must outlive this level.
+        /// </summary>
+        readonly List<Mesh> runtimeMeshes = new List<Mesh>();
+
         void ClearLevel()
         {
             propIndex = 0;
@@ -215,11 +233,44 @@ namespace LevelGen.Unity
             LevelRoot = null;
 
             Transform existing = transform.Find(LevelRootName);
-            if (existing == null) return;
 
             // DestroyImmediate so an editor-side "Rebuild" button works outside play mode.
-            if (Application.isPlaying) Destroy(existing.gameObject);
-            else DestroyImmediate(existing.gameObject);
+            if (existing != null)
+            {
+                if (Application.isPlaying) Destroy(existing.gameObject);
+                else DestroyImmediate(existing.gameObject);
+            }
+
+            // Meshes go AFTER the GameObjects that reference them, so nothing renders a destroyed mesh. In
+            // play mode both Destroy calls land in the same end-of-frame batch; in edit mode both are
+            // immediate and strictly ordered.
+            DestroyRuntimeMeshes();
+        }
+
+        /// <summary>Destroy and forget every Mesh this component created. Materials are NOT touched - they are
+        /// reused by the next build and released in OnDestroy.</summary>
+        void DestroyRuntimeMeshes()
+        {
+            bool playing = Application.isPlaying;
+            for (int i = 0; i < runtimeMeshes.Count; i++)
+            {
+                Mesh m = runtimeMeshes[i];
+                if (m == null) continue;
+                if (playing) Destroy(m);
+                else DestroyImmediate(m);
+            }
+            runtimeMeshes.Clear();
+        }
+
+        /// <summary>
+        /// Release everything this component owns: the current level's meshes and the shared material set.
+        /// Without this, every LevelBuilder that is ever destroyed leaves its 12+ generated materials behind
+        /// for the rest of the editor session.
+        /// </summary>
+        void OnDestroy()
+        {
+            DestroyRuntimeMeshes();
+            mats.DestroyCreated(!Application.isPlaying);
         }
 
         /// <summary>
@@ -392,6 +443,10 @@ namespace LevelGen.Unity
 
             if (collide && mesh != null && mesh.vertexCount > 0)
                 go.AddComponent<MeshCollider>().sharedMesh = mesh;
+
+            // Take ownership: this is a `new Mesh()` from RoomMeshBuilder, not an asset, so nothing else will
+            // ever free it.
+            if (mesh != null) runtimeMeshes.Add(mesh);
 
             return go;
         }

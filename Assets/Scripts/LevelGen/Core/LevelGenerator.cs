@@ -24,6 +24,12 @@ namespace LevelGen.Core
         /// <summary>Minimum corridor length kept on BOTH sides of a room: a template's fixed size must leave this much.</summary>
         public const double MinCorridorLength = 1.0;
 
+        /// <summary>Wall kept on each side of a corridor mouth. A room axis must be >= CorridorWidth + 2*DoorJamb.</summary>
+        public const double DoorJamb = 1.0;
+
+        /// <summary>Absolute floor on MinRoomSize, independent of corridor width.</summary>
+        public const double MinRoomSizeFloor = 3.0;
+
         private static void StepOf(Cardinal dir, out int dx, out int dy)
         {
             switch (dir)
@@ -88,6 +94,34 @@ namespace LevelGen.Core
                     $"CeilingHeight ({settings.CeilingHeight}) must be >= 2.4 m (ceiling lamps hang at CeilingHeight - 0.4).",
                     nameof(settings));
 
+            // A doorway needs a wall to sit in: one metre of wall either side of the corridor mouth.
+            if (settings.MinRoomSize < MinRoomSizeFloor)
+                throw new ArgumentException(
+                    $"MinRoomSize ({settings.MinRoomSize}) must be >= {MinRoomSizeFloor} m; smaller rooms are not navigable.",
+                    nameof(settings));
+            if (settings.MinRoomSize < settings.CorridorWidth + 2.0 * DoorJamb)
+                throw new ArgumentException(
+                    $"MinRoomSize ({settings.MinRoomSize}) must be >= CorridorWidth + 2*{DoorJamb} ({settings.CorridorWidth + 2.0 * DoorJamb}): a corridor may not be wider than the wall it pierces.",
+                    nameof(settings));
+
+            if (settings.PropSpacing < 0)
+                throw new ArgumentException(
+                    $"PropSpacing ({settings.PropSpacing}) must be >= 0: a negative gap would let furniture overlap.",
+                    nameof(settings));
+
+            if (settings.LightAreaPerLamp <= 0)
+                throw new ArgumentException($"LightAreaPerLamp ({settings.LightAreaPerLamp}) must be > 0 (square metres of floor per ceiling lamp).", nameof(settings));
+            if (settings.CorridorLightSpacing < RoomFurnisher.MinCorridorLightSpacing)
+                throw new ArgumentException(
+                    $"CorridorLightSpacing ({settings.CorridorLightSpacing}) must be >= {RoomFurnisher.MinCorridorLightSpacing} m, else a corridor is packed with an unbounded number of strip lights.",
+                    nameof(settings));
+
+            // CeilingOffsets only knows ceiling-lamp layouts for 1..4 lamps, so a larger cap is a lie.
+            if (settings.MaxLightsPerRoom < 0 || settings.MaxLightsPerRoom > RoomFurnisher.MaxCeilingLampsPerRoom)
+                throw new ArgumentException(
+                    $"MaxLightsPerRoom ({settings.MaxLightsPerRoom}) must be in [0, {RoomFurnisher.MaxCeilingLampsPerRoom}]: RoomFurnisher only has ceiling-lamp layouts up to {RoomFurnisher.MaxCeilingLampsPerRoom} lamps.",
+                    nameof(settings));
+
             // --- v3: spawn door budget + templates ----------------------------------------------
             if (settings.SpawnMaxDoors < 1 || settings.SpawnMaxDoors > 4)
                 throw new ArgumentException(
@@ -105,6 +139,15 @@ namespace LevelGen.Core
                         throw new ArgumentException($"Templates[{i}] is null.", nameof(settings));
                     if (string.IsNullOrEmpty(t.Name))
                         throw new ArgumentException($"Templates[{i}].Name must be non-empty.", nameof(settings));
+                    if (t.FixedSizeX < 0 || t.FixedSizeZ < 0)
+                        throw new ArgumentException(
+                            $"Template '{t.Name}' fixed size ({t.FixedSizeX} x {t.FixedSizeZ}) must not be negative (0 means 'roll it procedurally').",
+                            nameof(settings));
+                    double minFixed = settings.CorridorWidth + 2.0 * DoorJamb;
+                    if ((t.FixedSizeX > 0 && t.FixedSizeX < minFixed) || (t.FixedSizeZ > 0 && t.FixedSizeZ < minFixed))
+                        throw new ArgumentException(
+                            $"Template '{t.Name}' fixed size ({t.FixedSizeX} x {t.FixedSizeZ}) must be >= CorridorWidth + 2*{DoorJamb} ({minFixed}) on both axes: a room narrower than that cannot take a doorway.",
+                            nameof(settings));
                     if (t.FixedSizeX >= maxFixed || t.FixedSizeZ >= maxFixed)
                         throw new ArgumentException(
                             $"Template '{t.Name}' fixed size ({t.FixedSizeX} x {t.FixedSizeZ}) must be < CellSize - 2*{MinCorridorLength} ({maxFixed}) so every corridor into it has positive length.",

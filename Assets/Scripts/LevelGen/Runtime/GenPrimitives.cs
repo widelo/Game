@@ -2,6 +2,12 @@
 // (that would attach a collider to every one of the ~8 parts per prop, which we would then have to destroy
 // and which the NavMesh would collect). Everything is a unit mesh scaled by the part's transform, so the
 // whole level's furniture uses three shared meshes.
+//
+// LIFETIME: these meshes are PROCESS-WIDE and built once on first use. They are deliberately never destroyed
+// by LevelBuilder.ClearLevel - a rebuild must not pull the mesh out from under the next build, or under a
+// second LevelBuilder in the same scene. That is a bounded, one-time cost (one box, one cylinder, a handful
+// of frustums) and contributes nothing to per-rebuild growth. The `!= null` guards use Unity's Object
+// comparison, so after an editor domain reload wipes them the next access simply rebuilds them.
 using System.Collections.Generic;
 using UnityEngine;
 

@@ -61,7 +61,15 @@ namespace LevelGen.Core
 
         /// <summary>Lighting budget: built-in forward rendering gets expensive fast, so cap per room.</summary>
         public const int MaxDeskLampsPerRoom = 3;
-        public const int MaxTotalLightsPerRoom = 7;
+
+        /// <summary>CeilingOffsets only has layouts for 1..4 ceiling lamps; LevelGenSettings.MaxLightsPerRoom is capped to this.</summary>
+        public const int MaxCeilingLampsPerRoom = 4;
+
+        /// <summary>Derived, so the budget cannot drift from the two caps it is made of (+1 wall sconce is gated on it).</summary>
+        public const int MaxTotalLightsPerRoom = MaxCeilingLampsPerRoom + MaxDeskLampsPerRoom;
+
+        /// <summary>Lower bound on LevelGenSettings.CorridorLightSpacing, and the pitch the defensive strip cap uses.</summary>
+        public const double MinCorridorLightSpacing = 1.0;
 
         // =============================================================================================
         // public entry point
@@ -840,10 +848,13 @@ namespace LevelGen.Core
             var p0 = c.Path[0];
             var p1 = c.Path[c.Path.Count - 1];
             double len = c.Length;
-            double spacing = s.CorridorLightSpacing > 0 ? s.CorridorLightSpacing : 7.0;
+            double spacing = s.CorridorLightSpacing >= MinCorridorLightSpacing ? s.CorridorLightSpacing : MinCorridorLightSpacing;
+            // Defensive cap: even a pathological spacing can never light a corridor denser than one
+            // strip per MinCorridorLightSpacing metres (ValidateSettings rejects such settings anyway).
+            int maxStrips = (int)Math.Ceiling(len / MinCorridorLightSpacing) + 1;
 
             var ts = new List<double>();
-            for (double t = spacing * 0.5; t < len; t += spacing) ts.Add(t);
+            for (double t = spacing * 0.5; t < len && ts.Count < maxStrips; t += spacing) ts.Add(t);
             if (ts.Count == 0) ts.Add(len * 0.5); // every corridor gets at least one strip
 
             foreach (double t in ts)

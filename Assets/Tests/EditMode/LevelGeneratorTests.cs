@@ -815,6 +815,106 @@ namespace LevelGen.Core.Tests
                 WithTemplates(RoomTemplateSpec.Prefab("JustFits", 27.9, 9.0, DoorSides.All))));
         }
 
+        // =====================================================================================
+        // v3 fuzz findings: settings-validation gaps (one test per fuzzer-reported gap)
+        // =====================================================================================
+
+        [Test]
+        public void Settings_Throw_WhenPropSpacingIsNegative_AndValidatorStillFlagsOverlap()
+        {
+            Assert.Throws<ArgumentException>(() => LevelGenerator.Generate(2, new LevelGenSettings { PropSpacing = -1.0 }));
+            Assert.DoesNotThrow(() => LevelGenerator.Generate(2, new LevelGenSettings { PropSpacing = 0.0 }));
+
+            // The validator must flag geometric overlap even when handed a layout whose settings claim
+            // a negative (i.e. clamped to zero) required gap.
+            var layout = LevelGenerator.Generate(2);
+            Assert.IsEmpty(LevelValidator.Validate(layout), "seed 2 must start clean");
+            layout.Settings.PropSpacing = -1.0;
+            Room victim = null;
+            foreach (var r in layout.Rooms) if (r.Props.Count >= 2) { victim = r; break; }
+            Assert.IsNotNull(victim, "seed 2 has no room with two props");
+            victim.Props[1].Position = victim.Props[0].Position;
+            var errors = LevelValidator.Validate(layout);
+            Assert.IsNotEmpty(errors, "two props at the same spot must be reported even with PropSpacing < 0");
+            StringAssert.Contains("overlap", Join(errors));
+        }
+
+        [Test]
+        public void Settings_Throw_WhenCorridorLightSpacingIsTooSmall_AndStripsStayBounded()
+        {
+            Assert.Throws<ArgumentException>(() => LevelGenerator.Generate(0, new LevelGenSettings { CorridorLightSpacing = 1e-7 }));
+            Assert.Throws<ArgumentException>(() => LevelGenerator.Generate(0, new LevelGenSettings { CorridorLightSpacing = 0.001 }));
+            Assert.Throws<ArgumentException>(() => LevelGenerator.Generate(0, new LevelGenSettings { CorridorLightSpacing = 0.0 }));
+
+            var layout = LevelGenerator.Generate(0, new LevelGenSettings { CorridorLightSpacing = RoomFurnisher.MinCorridorLightSpacing });
+            foreach (var c in layout.Corridors)
+            {
+                int cap = (int)Math.Ceiling(c.Length / RoomFurnisher.MinCorridorLightSpacing) + 1;
+                Assert.LessOrEqual(c.Lights.Count, cap,
+                    "corridor " + c.Id + " has " + c.Lights.Count + " strips for a length of " + c.Length);
+            }
+        }
+
+        [Test]
+        public void Settings_Throw_WhenCorridorIsWiderThanTheWallItPierces()
+        {
+            Assert.Throws<ArgumentException>(() => LevelGenerator.Generate(0,
+                new LevelGenSettings { MinRoomSize = 3.0, CorridorWidth = 6.0, MouthClearance = 1.0 }));
+            Assert.Throws<ArgumentException>(() => LevelGenerator.Generate(0,
+                new LevelGenSettings { MinRoomSize = 0.01, MouthClearance = 0.005 }));
+            // A prefab room narrower than CorridorWidth + 2 m cannot take a doorway on that axis.
+            Assert.Throws<ArgumentException>(() => LevelGenerator.Generate(0,
+                WithTemplates(RoomTemplateSpec.Prefab("Narrow", 4.0, 9.0, DoorSides.All))));
+            Assert.Throws<ArgumentException>(() => LevelGenerator.Generate(0,
+                WithTemplates(RoomTemplateSpec.Prefab("Shallow", 9.0, 5.0, DoorSides.All))));
+            // Default CorridorWidth 3.2 => 5.2 m is the minimum axis.
+            Assert.DoesNotThrow(() => LevelGenerator.Generate(0,
+                WithTemplates(RoomTemplateSpec.Prefab("JustWide", 5.2, 5.2, DoorSides.All))));
+        }
+
+        [Test]
+        public void Settings_Throw_WhenTemplateFixedSizeIsNegative()
+        {
+            var negX = RoomTemplateSpec.Prefab("NegX", -1.0, 9.0, DoorSides.All);
+            Assert.Throws<ArgumentException>(() => LevelGenerator.Generate(0, WithTemplates(negX)));
+            var negZ = RoomTemplateSpec.Prefab("NegZ", 9.0, -0.001, DoorSides.All);
+            Assert.Throws<ArgumentException>(() => LevelGenerator.Generate(0, WithTemplates(negZ)));
+            // 0 keeps its documented meaning: roll the footprint procedurally.
+            var procedural = RoomTemplateSpec.Prefab("RolledFootprint", 0.0, 0.0, DoorSides.All);
+            var layout = LevelGenerator.Generate(0, WithTemplates(procedural));
+            Assert.IsEmpty(LevelValidator.Validate(layout));
+            foreach (var r in layout.Rooms)
+                if (r.TemplateName == "RolledFootprint")
+                {
+                    Assert.GreaterOrEqual(r.SizeX, layout.Settings.MinRoomSize - 1e-9, "room " + r.Id);
+                    Assert.LessOrEqual(r.SizeX, layout.Settings.MaxRoomSize + 1e-9, "room " + r.Id);
+                }
+        }
+
+        [Test]
+        public void Settings_Throw_WhenMaxLightsPerRoomExceedsTheCeilingLayouts()
+        {
+            Assert.Throws<ArgumentException>(() => LevelGenerator.Generate(0, new LevelGenSettings { MaxLightsPerRoom = 5 }));
+            Assert.Throws<ArgumentException>(() => LevelGenerator.Generate(0, new LevelGenSettings { MaxLightsPerRoom = 99 }));
+            Assert.Throws<ArgumentException>(() => LevelGenerator.Generate(0, new LevelGenSettings { MaxLightsPerRoom = -1 }));
+            Assert.DoesNotThrow(() => LevelGenerator.Generate(0, new LevelGenSettings { MaxLightsPerRoom = 0 }));
+
+            Assert.AreEqual(4, RoomFurnisher.MaxCeilingLampsPerRoom);
+            Assert.AreEqual(RoomFurnisher.MaxCeilingLampsPerRoom + RoomFurnisher.MaxDeskLampsPerRoom,
+                RoomFurnisher.MaxTotalLightsPerRoom, "the light budget must stay derived from its two caps");
+
+            for (int seed = 0; seed < 100; seed++)
+            {
+                var layout = LevelGenerator.Generate(seed, new LevelGenSettings { MaxLightsPerRoom = 4 });
+                foreach (var r in layout.Rooms)
+                {
+                    int ceiling = 0;
+                    foreach (var l in r.Lights) if (l.Type == LightType.CeilingLamp) ceiling++;
+                    Assert.LessOrEqual(ceiling, RoomFurnisher.MaxCeilingLampsPerRoom, "seed " + seed + " room " + r.Id);
+                }
+            }
+        }
+
         private static RoomTemplateSpec Weighted(RoomTemplateSpec t, double weight)
         {
             t.Weight = weight;

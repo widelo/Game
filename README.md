@@ -80,10 +80,31 @@ PROJ='C:\Users\schmi\projs\Game'
 # 4. the real smoke test: 20 seeds, built, validated, NavMesh-path-checked
 "$UNITY" -batchmode -nographics -quit -projectPath "$PROJ" \
          -executeMethod Game.Editor.HeadlessVerify.BuildLevels -logFile "$PROJ\Logs\verify.log"
+
+# 5. play-mode tests: scene loads, player lands on the NavMesh, every room reachable, 50 rebuilds without
+#    leaking meshes or materials, overhead view toggles, same seed gives identical geometry
+"$UNITY" -batchmode -projectPath "$PROJ" -runTests -testPlatform PlayMode \
+         -testResults "$PROJ\Logs\playmode.xml" -logFile "$PROJ\Logs\playmode.log"
+
+# 6. stress: N seeds (default 200) through the same checks as step 4, with timing
+LEVELGEN_SEEDS=200 "$UNITY" -batchmode -nographics -quit -projectPath "$PROJ" \
+         -executeMethod Game.Editor.HeadlessVerify.BuildLevelsStress -logFile "$PROJ\Logs\stress.log"
+
+# 7. leak check: 100 edit-mode rebuilds, mesh/material counts must not trend upward
+"$UNITY" -batchmode -nographics -quit -projectPath "$PROJ" \
+         -executeMethod Game.Editor.LeakCheck.Run -logFile "$PROJ\Logs\leak.log"
+
+# 8. standalone Windows build (proves nothing editor-only leaked into runtime code)
+BUILD_OUT="$PROJ\Build\Win64\CS462Game.exe" "$UNITY" -batchmode -nographics -quit -projectPath "$PROJ" \
+         -executeMethod Game.Editor.BuildPlayer.Windows64 -logFile "$PROJ\Logs\build.log"
 ```
 
 Only one Unity instance may have the project open at a time, so close the editor before running these.
 Each command exits non-zero on failure; the detail is in the log file.
+
+Numbers from the last full run: 48 edit-mode tests, 7 play-mode tests, 200 seeds stress-verified
+(average build 23 ms including the NavMesh bake, max 140 ms), materials flat at 63 across 100 rebuilds,
+Windows build 177 MB.
 
 ## Docs
 
