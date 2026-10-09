@@ -1,0 +1,17 @@
+{
+  "name": "Game.Editor",
+  "rootNamespace": "Game.Editor",
+  "references": [
+    "LevelGen.Core",
+    "LevelGen.Unity",
+    "Game.Player",
+    "Game.Debug",
+    "Unity.AI.Navigation",
+    "Unity.RenderPipelines.Universal.Runtime",
+    "Unity.RenderPipelines.Core.Runtime"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "autoReferenced": true
+}
