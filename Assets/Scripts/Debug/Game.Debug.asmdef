@@ -1,0 +1,6 @@
+{
+  "name": "Game.Debug",
+  "rootNamespace": "Game.Debug",
+  "references": ["LevelGen.Core", "LevelGen.Unity", "Game.Player"],
+  "autoReferenced": true
+}

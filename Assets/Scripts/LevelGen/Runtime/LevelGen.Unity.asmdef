@@ -1,0 +1,6 @@
+{
+  "name": "LevelGen.Unity",
+  "rootNamespace": "LevelGen.Unity",
+  "references": ["LevelGen.Core", "Unity.AI.Navigation"],
+  "autoReferenced": true
+}

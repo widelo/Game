@@ -1,0 +1,7 @@
+{
+  "name": "LevelGen.Unity.Editor",
+  "rootNamespace": "LevelGen.Unity.Editor",
+  "references": ["LevelGen.Core", "LevelGen.Unity"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true
+}

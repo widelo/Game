@@ -1,0 +1,7 @@
+{
+  "name": "LevelGen.Core",
+  "rootNamespace": "LevelGen.Core",
+  "references": [],
+  "noEngineReferences": true,
+  "autoReferenced": true
+}

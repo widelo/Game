@@ -34,3 +34,7 @@ sysinfo.txt
 # Build files
 *.apk
 *.aab
+
+# Unity-generated solution / IDE files
+*.slnx
+.vscode/
