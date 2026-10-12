@@ -1,0 +1,9 @@
+{
+  "name": "LevelGen.Core.Tests",
+  "rootNamespace": "LevelGen.Core.Tests",
+  "references": ["LevelGen.Core"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+  "autoReferenced": false
+}
