@@ -1,5 +1,8 @@
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Reflection;
+using System.Text.RegularExpressions;
 using System.Linq;
 using LevelGen.Core;
 using LevelGen.Unity;
@@ -27,6 +30,15 @@ namespace Game.Editor
     ///    apply byte-for-byte the same checks;
     ///  - BuildLevelsStress() runs LEVELGEN_SEEDS (default 200) seeds and reports aggregates instead of a
     ///    line per seed.
+    ///
+    /// v5 additions (demo build):
+    ///  - generated ceilings carry a MeshCollider (and the NavMesh max-y check proves the ignoreFromBuild
+    ///    modifier keeps them out of the bake);
+    ///  - when the profile maps the hospital bed prefab, at least one bed instance appears over the sweep, and
+    ///    every FITTED prefab prop's renderer bounds stay inside its Core footprint + 0.3 m;
+    ///  - when Main.unity has a Game.Enemy.EnemySpawner: Enemies.Count == enemyCount, every enemy within 1 m of
+    ///    the NavMesh, and a complete NavMesh path from each enemy to the player spawn. The enemy types are
+    ///    resolved by NAME so this file compiles without the Game.Enemy assembly.
     ///
     /// Run: Unity.exe -batchmode -nographics -quit -projectPath ... -executeMethod Game.Editor.HeadlessVerify.BuildLevels
     ///      Unity.exe -batchmode -nographics -quit -projectPath ... -executeMethod Game.Editor.HeadlessVerify.BuildLevelsStress
@@ -68,6 +80,7 @@ namespace Game.Editor
             public float NavMaxY;
             public long BuildMs;
             public int WidenedRooms;
+            public int BedInstances, FittedProps, Enemies;
             public int AuthoringWarnings;
             public string TemplateUsage;
             public Dictionary<string, int> TemplateCounts;
@@ -87,15 +100,19 @@ namespace Game.Editor
             // Name of the prefab the TeammateRoom template points at, read from the asset so this verifier
             // never hardcodes "Floor" - renaming the prefab must not quietly disable the check.
             string prefabName = ReadTemplatePrefabName(TeammateTemplateAssetPath);
+            PropMap propMap = PropMap.Read(builder);
 
             var failures = new List<string>();
             int prefabRoomCount = 0;   // rooms built from PrefabTemplateName, summed over every seed
+            int bedInstances = 0, fittedProps = 0;
 
             for (int i = 0; i < seedCount; i++)
             {
                 int seed = firstSeed + i;
-                SeedStats s = VerifySeed(builder, seed, prefabName, failures);
+                SeedStats s = VerifySeed(builder, seed, prefabName, propMap, failures);
                 prefabRoomCount += s.PrefabRooms;
+                bedInstances += s.BedInstances;
+                fittedProps += s.FittedProps;
                 if (!s.LayoutOk) continue;
 
                 UnityEngine.Debug.Log($"[HeadlessVerify] seed={seed} rooms={s.Rooms} corridors={s.Corridors} " +
@@ -104,6 +121,7 @@ namespace Game.Editor
                           $"navVerts={s.NavVerts} navMaxY={s.NavMaxY:F2} renderers={s.Renderers} " +
                           $"buildMs={s.BuildMs} " +
                           $"spawnDoors={SpawnDoors(builder)} " +
+                          $"beds={s.BedInstances} fittedProps={s.FittedProps} enemies={s.Enemies} " +
                           $"templates={{{s.TemplateUsage}}}");
             }
 
@@ -114,6 +132,7 @@ namespace Game.Editor
             if (prefabRoomCount < 1)
                 failures.Add($"template \"{PrefabTemplateName}\" was never placed in {seedCount} seeds " +
                              "(is it in the profile's templates list, and does its footprint fit a lattice cell?)");
+            CheckBedSweep(propMap, bedInstances, fittedProps, seedCount, failures);
 
             if (failures.Count > 0)
             {
@@ -144,8 +163,10 @@ namespace Game.Editor
             if (builder == null) return StressFail("no LevelBuilder in Main.unity", exitOnDone);
 
             string prefabName = ReadTemplatePrefabName(TeammateTemplateAssetPath);
+            PropMap propMap = PropMap.Read(builder);
 
             var failures = new List<string>();
+            int bedInstances = 0, fittedProps = 0;
             var templateTotals = new Dictionary<string, int>();
 
             long totalBuildMs = 0, maxBuildMs = 0;
@@ -161,8 +182,10 @@ namespace Game.Editor
             {
                 if (i % 20 == 0) { chunkBuildMs = 0; chunkSeeds = 0; chunkFailuresAtStart = failures.Count; }
 
-                SeedStats s = VerifySeed(builder, i, prefabName, failures);
+                SeedStats s = VerifySeed(builder, i, prefabName, propMap, failures);
                 prefabRoomCount += s.PrefabRooms;
+                bedInstances += s.BedInstances;
+                fittedProps += s.FittedProps;
                 authoringWarnings += s.AuthoringWarnings;
                 widenedRooms += s.WidenedRooms;
                 totalBuildMs += s.BuildMs;
@@ -209,6 +232,7 @@ namespace Game.Editor
 
             if (prefabRoomCount < 1)
                 failures.Add($"template \"{PrefabTemplateName}\" was never placed in {seedCount} seeds");
+            CheckBedSweep(propMap, bedInstances, fittedProps, seedCount, failures);
 
             if (failures.Count > 0)
             {
@@ -260,7 +284,7 @@ namespace Game.Editor
         /// are what the two callers turn into their log lines. LayoutOk false means the build produced nothing
         /// usable and the rest of the stats are meaningless.
         /// </summary>
-        static SeedStats VerifySeed(LevelBuilder builder, int seed, string prefabName, List<string> failures)
+        static SeedStats VerifySeed(LevelBuilder builder, int seed, string prefabName, PropMap propMap, List<string> failures)
         {
             var stats = new SeedStats();
 
@@ -294,6 +318,12 @@ namespace Game.Editor
             if (!renderers.Any(r => r.name.Contains("Ceiling")))
                 failures.Add($"seed {seed}: no MeshRenderer with \"Ceiling\" in its name");
 
+            // ---- v5: generated ceilings collide (and are kept out of the bake - see the NavMesh max-y check) ----
+            CheckCeilingColliders(seed, renderers, failures);
+
+            // ---- v5: teammates' prop prefabs ----
+            CheckPrefabProps(seed, builder, layout, propMap, ref stats, failures);
+
             int enabledLights = builder.transform.GetComponentsInChildren<Light>(true)
                                        .Count(l => l.enabled && l.gameObject.activeInHierarchy);
             stats.Lights = enabledLights;
@@ -322,11 +352,15 @@ namespace Game.Editor
             float maxY = tri.vertices.Max(v => v.y);
             stats.NavMaxY = maxY;
             if (maxY > MaxNavVertexY)
-                failures.Add($"seed {seed}: NavMesh vertex at y={maxY:F2} > {MaxNavVertexY} (baked on a ceiling or furniture top)");
+                failures.Add($"seed {seed}: NavMesh vertex at y={maxY:F2} > {MaxNavVertexY} (baked on a ceiling or furniture top - " +
+                             "ceilings now have MeshColliders, so is their ignoreFromBuild NavMeshModifier missing?)");
 
             var spawn = builder.PlayerSpawnPoint;
             if (!NavMesh.SamplePosition(spawn, out var spawnHit, 1.0f, NavMesh.AllAreas))
             { failures.Add($"seed {seed}: spawn point not on NavMesh"); return stats; }
+
+            // ---- v5: placeholder enemy ----
+            stats.Enemies = CheckEnemies(seed, layout, spawnHit.position, failures);
 
             var widened = new List<int>();
             var authoredRooms = new List<string>();
@@ -530,6 +564,199 @@ namespace Game.Editor
                 return null;
             }
             return go.name;
+        }
+
+        // ------------------------------------------------------------------ v5 checks (demo build)
+
+        /// <summary>Generated ceiling meshes are "Ceiling_&lt;id&gt;"; a prefab room's own "Ceiling" children are not ours.</summary>
+        static readonly Regex GeneratedCeiling = new Regex(@"^Ceiling_\d+$");
+
+        /// <summary>Slack allowed between a fitted prefab's renderer bounds and its Core footprint.</summary>
+        const float FitSlack = 0.3f;
+
+        static void CheckCeilingColliders(int seed, MeshRenderer[] renderers, List<string> failures)
+        {
+            var missing = renderers.Where(r => GeneratedCeiling.IsMatch(r.name) && r.GetComponent<MeshCollider>() == null)
+                                   .Select(r => r.name).ToList();
+            if (missing.Count > 0)
+                failures.Add($"seed {seed}: {missing.Count} generated ceiling(s) without a MeshCollider " +
+                             $"(first: {missing[0]}) - the player can jump / see through the ceiling");
+        }
+
+        /// <summary>The profile's prop prefab mappings, read through SerializedObject (no compile-time dependency on the entry fields).</summary>
+        sealed class PropMap
+        {
+            /// <summary>Prefab name per PropType name, and whether that mapping has a fit mode other than None.</summary>
+            public readonly Dictionary<string, string> PrefabByType = new Dictionary<string, string>();
+            public readonly HashSet<string> FittedTypes = new HashSet<string>();
+            public string BedPrefabName;
+
+            public static PropMap Read(LevelBuilder builder)
+            {
+                var map = new PropMap();
+                Object profile = new SerializedObject(builder).FindProperty("profile")?.objectReferenceValue;
+                if (profile == null) profile = AssetDatabase.LoadAssetAtPath<ScriptableObject>(SceneBootstrap.ProfileAssetPath);
+                if (profile == null) { UnityEngine.Debug.LogWarning("[HeadlessVerify] no profile - prop prefab checks skipped"); return map; }
+
+                var arr = new SerializedObject(profile).FindProperty("propPrefabs");
+                if (arr == null || !arr.isArray) return map;
+                for (int i = 0; i < arr.arraySize; i++)
+                {
+                    var el = arr.GetArrayElementAtIndex(i);
+                    var type = el.FindPropertyRelative("type");
+                    var prefab = el.FindPropertyRelative("prefab")?.objectReferenceValue;
+                    if (type == null || prefab == null || type.enumValueIndex < 0) continue;
+                    string typeName = type.enumNames[type.enumValueIndex];
+                    map.PrefabByType[typeName] = prefab.name;
+                    var fit = el.FindPropertyRelative("fit");
+                    if (fit != null && fit.propertyType == SerializedPropertyType.Enum && fit.enumValueIndex >= 0 &&
+                        fit.enumNames[fit.enumValueIndex] != "None")
+                        map.FittedTypes.Add(typeName);
+                    if (typeName == nameof(PropType.HospitalBed)) map.BedPrefabName = prefab.name;
+                }
+                UnityEngine.Debug.Log($"[HeadlessVerify] prop prefab map: " +
+                    (map.PrefabByType.Count == 0 ? "(none)" : string.Join(", ", map.PrefabByType.Select(kv =>
+                        $"{kv.Key}->{kv.Value}{(map.FittedTypes.Contains(kv.Key) ? " (fitted)" : "")}"))));
+                return map;
+            }
+        }
+
+        /// <summary>
+        /// Counts bed-prefab instances and checks every FITTED prefab prop: its renderer bounds must sit inside the
+        /// Core footprint (+<see cref="FitSlack"/>) of the layout prop it was built from. Scene objects are named
+        /// "Prop_&lt;Type&gt;_&lt;index&gt;_&lt;prefab&gt;"; each is matched to the nearest Core prop of the same
+        /// type by XZ distance (props never overlap, so nearest is unambiguous).
+        /// </summary>
+        static void CheckPrefabProps(int seed, LevelBuilder builder, LevelLayout layout, PropMap map,
+                                     ref SeedStats stats, List<string> failures)
+        {
+            if (map.PrefabByType.Count == 0) return;
+            var coreProps = layout.AllProps().ToList();
+
+            foreach (Transform t in builder.transform.GetComponentsInChildren<Transform>(true))
+            {
+                string n = t.name;
+                // The fitted model child is renamed to the prefab name ("hospital bed"); its "Prop_*_hospital bed"
+                // root is NOT counted as well, so one bed counts once.
+                // (Parent must be a Prop_ root, so a teammate prefab room's own bed meshes are not counted.)
+                if (map.BedPrefabName != null && n.StartsWith(map.BedPrefabName) &&
+                    t.parent != null && t.parent.name.StartsWith("Prop_"))
+                    stats.BedInstances++;
+
+                if (!n.StartsWith("Prop_")) continue;
+                string[] parts = n.Split(new[] { '_' }, 4);   // Prop, Type, index, prefab name (may contain '_')
+                if (parts.Length < 4 || !map.FittedTypes.Contains(parts[1])) continue;
+                if (!map.PrefabByType.TryGetValue(parts[1], out string prefabName) || parts[3] != prefabName) continue;
+
+                Bounds b = LevelGen.Unity.ModelFit.RendererBounds(t.gameObject);
+                if (b.size == Vector3.zero) { failures.Add($"seed {seed}: fitted prop {n} has no renderer bounds"); continue; }
+                stats.FittedProps++;
+
+                Prop best = null; float bestD = float.MaxValue;
+                foreach (var cp in coreProps)
+                {
+                    if (cp.Type.ToString() != parts[1]) continue;
+                    float dx = (float)cp.Position.X - b.center.x, dz = (float)cp.Position.Z - b.center.z;
+                    float d = dx * dx + dz * dz;
+                    if (d < bestD) { bestD = d; best = cp; }
+                }
+                if (best == null) { failures.Add($"seed {seed}: fitted prop {n} has no Core prop of type {parts[1]}"); continue; }
+
+                best.WorldHalfExtents(out double hx, out double hz);
+                float cx = (float)best.Position.X, cz = (float)best.Position.Z;
+                float overX = Mathf.Max(b.max.x - (cx + (float)hx), (cx - (float)hx) - b.min.x);
+                float overZ = Mathf.Max(b.max.z - (cz + (float)hz), (cz - (float)hz) - b.min.z);
+                float over = Mathf.Max(overX, overZ);
+                if (over > FitSlack)
+                    failures.Add($"seed {seed}: fitted prop {n} renderer bounds extend {over:F2} m beyond its " +
+                                 $"{best.SizeX:F2}x{best.SizeZ:F2} m Core footprint (slack {FitSlack}) - check the fit mode / centreXZ");
+            }
+        }
+
+        static void CheckBedSweep(PropMap map, int bedInstances, int fittedProps, int seedCount, List<string> failures)
+        {
+            UnityEngine.Debug.Log($"[HeadlessVerify] bed prefab instances across {seedCount} seeds: {bedInstances} " +
+                                  $"(prefab '{map.BedPrefabName ?? "unmapped"}'), fitted props checked: {fittedProps}");
+            if (map.BedPrefabName != null && bedInstances < 1)
+                failures.Add($"HospitalBed is mapped to '{map.BedPrefabName}' but no instance appeared in {seedCount} seeds " +
+                             "(is the profile's propPrefabs entry reaching LevelBuilder.SpawnProps?)");
+        }
+
+        /// <summary>
+        /// Enemy checks, all by reflection on Game.Enemy.EnemySpawner (absent type or component = skipped).
+        /// The spawner subscribes to OnLevelBuilt in Start(), which never runs in an edit-mode build, so this
+        /// calls its public Spawn(LevelLayout) itself - exactly what the play-mode OnLevelBuilt handler does.
+        /// The previous seed's enemies are DestroyImmediate'd first: the spawner's own Clear() uses Destroy(),
+        /// which is an error outside play mode. Returns the number of enemies seen.
+        /// </summary>
+        static int CheckEnemies(int seed, LevelLayout layout, Vector3 playerSpawnOnNav, List<string> failures)
+        {
+            System.Type spawnerType = FindTypeByName("Game.Enemy.EnemySpawner");
+            if (spawnerType == null) return 0;
+            var spawner = Object.FindAnyObjectByType(spawnerType) as Component;
+            if (spawner == null) return 0;
+
+            int want = ReadIntMember(spawner, "enemyCount", 1);
+            var spawn = spawnerType.GetMethod("Spawn", BindingFlags.Public | BindingFlags.Instance, null,
+                                              new[] { typeof(LevelLayout) }, null);
+            if (spawn == null)
+            {
+                failures.Add($"seed {seed}: EnemySpawner has no public Spawn(LevelLayout) - cannot verify enemies in edit mode");
+                return 0;
+            }
+            if (!Application.isPlaying)
+                foreach (var old in ReadEnemies(spawner)) Object.DestroyImmediate(old.gameObject);
+            spawn.Invoke(spawner, new object[] { layout });
+            List<Component> enemies = ReadEnemies(spawner);
+
+            if (enemies.Count != want)
+                failures.Add($"seed {seed}: EnemySpawner.Enemies.Count={enemies.Count} != enemyCount={want}");
+
+            foreach (var e in enemies)
+            {
+                Vector3 pos = e.transform.position;
+                if (!NavMesh.SamplePosition(pos, out var hit, 1.0f, NavMesh.AllAreas))
+                {
+                    failures.Add($"seed {seed}: enemy {e.name} at {pos} is more than 1 m from the NavMesh");
+                    continue;
+                }
+                var path = new NavMeshPath();
+                NavMesh.CalculatePath(hit.position, playerSpawnOnNav, NavMesh.AllAreas, path);
+                if (path.status != NavMeshPathStatus.PathComplete)
+                    failures.Add($"seed {seed}: enemy {e.name} -> player spawn path status {path.status}");
+            }
+            return enemies.Count;
+        }
+
+        static List<Component> ReadEnemies(Component spawner)
+        {
+            var result = new List<Component>();
+            var prop = spawner.GetType().GetProperty("Enemies", BindingFlags.Public | BindingFlags.Instance);
+            object value = prop != null ? prop.GetValue(spawner) : null;
+            if (value is IEnumerable list)
+                foreach (object o in list)
+                    if (o is Component c && c != null) result.Add(c);
+            return result;
+        }
+
+        static int ReadIntMember(object target, string name, int fallback)
+        {
+            var t = target.GetType();
+            var f = t.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (f != null && f.FieldType == typeof(int)) return (int)f.GetValue(target);
+            var p = t.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+            if (p != null && p.PropertyType == typeof(int)) return (int)p.GetValue(target);
+            return fallback;
+        }
+
+        static System.Type FindTypeByName(string fullName)
+        {
+            foreach (var asm in System.AppDomain.CurrentDomain.GetAssemblies())
+            {
+                var t = asm.GetType(fullName, false);
+                if (t != null) return t;
+            }
+            return null;
         }
 
         // ------------------------------------------------------------------ shared

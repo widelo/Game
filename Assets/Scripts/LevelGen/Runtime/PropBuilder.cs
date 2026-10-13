@@ -58,7 +58,8 @@ namespace LevelGen.Unity
         ///
         /// The prefab is instantiated at the prop's world position with the prop's Y rotation, so it must be
         /// authored with its footprint centred on its origin and its base at y = 0. Scale is the prefab's own:
-        /// the generator never stretches art to fit, it only reserves the footprint Core chose.
+        /// this legacy overload never stretches art to fit. LevelBuilder uses the PropPrefabEntry overload,
+        /// which fits the model to the footprint via ModelFit.
         ///
         /// Collision: a root BoxCollider covering footprint x height is added only when
         /// <paramref name="addColliderIfMissing"/> is set AND the prefab contains no Collider anywhere - so a
@@ -85,6 +86,131 @@ namespace LevelGen.Unity
             MarkNotWalkable(root);
 
             return root;
+        }
+
+        /// <summary>
+        /// A teammate's furniture prefab FITTED to the footprint Core reserved, driven by a
+        /// <see cref="PropPrefabEntry"/>. This is what <see cref="LevelBuilder"/> uses.
+        ///
+        /// Hierarchy: an unscaled root "Prop_&lt;type&gt;_&lt;i&gt;_&lt;prefab&gt;" at the prop position with the
+        /// prop's Y rotation (exactly like the primitive path), with the prefab instance as its only child. The
+        /// child gets <see cref="PropPrefabEntry.extraRotationEuler"/>, then is scaled / grounded / centred per
+        /// <see cref="PropPrefabEntry.fit"/> via <see cref="ModelFit"/>. Because the root is never scaled, the
+        /// root BoxCollider is sized from the Core footprint exactly as for primitives.
+        ///
+        /// Collision: with <see cref="PropPrefabEntry.keepPrefabColliders"/> off every Collider in the instance
+        /// is destroyed first. A root footprint BoxCollider is then added when
+        /// <see cref="PropPrefabEntry.addColliderIfMissing"/> is set and no Collider remains. The root is
+        /// marked Not Walkable either way (the modifier applies to children, so prefab colliders are covered).
+        /// </summary>
+        public static GameObject BuildFromPrefab(Transform parent, Prop prop, int index, PropPrefabEntry entry)
+        {
+            if (prop == null || entry == null || entry.prefab == null) return null;
+
+            float sx = Mathf.Max(0.05f, (float)prop.SizeX);
+            float sz = Mathf.Max(0.05f, (float)prop.SizeZ);
+            float h = Mathf.Max(0.05f, (float)prop.Height);
+
+            var root = new GameObject($"Prop_{prop.Type}_{index}_{entry.prefab.name}");
+            root.layer = 0;
+            root.transform.SetParent(parent, false);
+            root.transform.localPosition = new Vector3((float)prop.Position.X, 0f, (float)prop.Position.Z);
+            root.transform.localRotation = Quaternion.Euler(0f, (float)prop.RotationDeg, 0f);
+
+            GameObject model = Object.Instantiate(entry.prefab, root.transform);
+            model.name = entry.prefab.name;
+            model.transform.localPosition = Vector3.zero;
+            model.transform.localRotation = Quaternion.Euler(entry.extraRotationEuler);
+
+            FitModel(model, entry, sx, sz, h);
+
+            if (!entry.keepPrefabColliders)
+            {
+                // DestroyImmediate, not Destroy: a deferred destroy would still be seen by the collider check
+                // below and by the NavMesh bake later this same frame. Safe - these are instance components.
+                Collider[] cols = model.GetComponentsInChildren<Collider>(true);
+                for (int i = 0; i < cols.Length; i++)
+                    if (cols[i] != null) Object.DestroyImmediate(cols[i]);
+            }
+
+            if (entry.addColliderIfMissing && root.GetComponentInChildren<Collider>(true) == null)
+                AddFootprintCollider(root, sx, sz, h);
+
+            MarkNotWalkable(root);
+            return root;
+        }
+
+        /// <summary>Scale / ground / centre <paramref name="model"/> (a child of the prop root) per the entry.</summary>
+        static void FitModel(GameObject model, PropPrefabEntry entry, float sx, float sz, float h)
+        {
+            const float Inf = float.PositiveInfinity;
+            Transform t = model.transform;
+
+            switch (entry.fit)
+            {
+                case PropFitMode.UniformToHeight:
+                    ModelFit.FitToHeight(model, h, entry.groundToFloor, entry.centreXZ);
+                    return;
+
+                case PropFitMode.FitFootprint:
+                case PropFitMode.UniformToFootprint:
+                {
+                    AlignLongestHorizontal(model, sx, sz);
+                    Vector3 propTarget = entry.fit == PropFitMode.FitFootprint
+                        ? new Vector3(sx, h, sz)
+                        : new Vector3(sx, Inf, sz);
+                    ModelFit.FitToBox(model, ToModelAxes(t.localRotation, propTarget),
+                                      entry.fit == PropFitMode.UniformToFootprint,
+                                      entry.groundToFloor, entry.centreXZ);
+                    return;
+                }
+
+                default: // None: no scaling, alignment only
+                    ModelFit.FitToBox(model, new Vector3(Inf, Inf, Inf), true, entry.groundToFloor, entry.centreXZ);
+                    return;
+            }
+        }
+
+        /// <summary>
+        /// If the model's longest horizontal extent (in the prop frame) runs across the footprint's longest
+        /// horizontal axis, turn the model 90 degrees about the prop's Y so a bed modelled along X fits a
+        /// footprint along Z. Nearly square models / footprints (within 5%) are left alone.
+        /// </summary>
+        static void AlignLongestHorizontal(GameObject model, float sx, float sz)
+        {
+            Transform t = model.transform;
+            Bounds local = ModelFit.LocalBounds(model);
+            Vector3 size = Vector3.Scale(local.size, Abs(t.localScale));
+
+            Vector3 inProp = Vector3.zero;
+            for (int i = 0; i < 3; i++)
+                inProp[DominantAxis(t.localRotation * Unit(i))] = size[i];
+
+            const float Square = 1.05f;
+            bool modelSquare = Mathf.Max(inProp.x, inProp.z) <= Mathf.Min(inProp.x, inProp.z) * Square;
+            bool footSquare = Mathf.Max(sx, sz) <= Mathf.Min(sx, sz) * Square;
+            if (modelSquare || footSquare) return;
+
+            if ((inProp.x > inProp.z) != (sx > sz))
+                t.localRotation = Quaternion.Euler(0f, 90f, 0f) * t.localRotation;
+        }
+
+        /// <summary>A size in the prop frame re-expressed along the model's local axes (rotation in 90s).</summary>
+        static Vector3 ToModelAxes(Quaternion modelRotation, Vector3 propSize)
+        {
+            Vector3 r = Vector3.zero;
+            for (int i = 0; i < 3; i++) r[i] = propSize[DominantAxis(modelRotation * Unit(i))];
+            return r;
+        }
+
+        static Vector3 Unit(int i) { Vector3 v = Vector3.zero; v[i] = 1f; return v; }
+
+        static Vector3 Abs(Vector3 v) => new Vector3(Mathf.Abs(v.x), Mathf.Abs(v.y), Mathf.Abs(v.z));
+
+        static int DominantAxis(Vector3 v)
+        {
+            float ax = Mathf.Abs(v.x), ay = Mathf.Abs(v.y), az = Mathf.Abs(v.z);
+            return ax >= ay && ax >= az ? 0 : (ay >= az ? 1 : 2);
         }
 
         // ---------------------------------------------------------------- shared collision / nav

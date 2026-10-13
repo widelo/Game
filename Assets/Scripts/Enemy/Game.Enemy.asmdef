@@ -1,0 +1,6 @@
+{
+  "name": "Game.Enemy",
+  "rootNamespace": "Game.Enemy",
+  "references": ["LevelGen.Core", "LevelGen.Unity", "Game.Player"],
+  "autoReferenced": true
+}

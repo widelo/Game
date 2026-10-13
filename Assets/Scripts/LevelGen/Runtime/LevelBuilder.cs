@@ -165,6 +165,7 @@ namespace LevelGen.Unity
             if (p.killDirectionalLight) LightRig.KillDirectionalLights();
 
             int propCount = 0, lightCount = 0, prefabRooms = 0;
+            fittedPrefabs = 0;
 
             for (int i = 0; i < layout.Rooms.Count; i++)
             {
@@ -192,7 +193,7 @@ namespace LevelGen.Unity
                       $"corridors={layout.Corridors.Count} props={propCount} lights={lightCount} " +
                       $"prefabRooms={prefabRooms} meshes={runtimeMeshes.Count} " +
                       $"matsCreated={mats.CreatedCount - materialsBefore} " +
-                      $"navmesh={(navOk ? "ok" : "none")}");
+                      $"navmesh={(navOk ? "ok" : "none")} fittedPrefabs={fittedPrefabs}");
 
             OnLevelBuilt?.Invoke(layout);
         }
@@ -212,6 +213,7 @@ namespace LevelGen.Unity
 
         int propIndex;
         int lightIndex;
+        int fittedPrefabs;
 
         readonly Dictionary<int, GameObject> roomObjects = new Dictionary<int, GameObject>();
         readonly Dictionary<int, GameObject> corridorObjects = new Dictionary<int, GameObject>();
@@ -303,11 +305,8 @@ namespace LevelGen.Unity
                 AddMeshObject(holder.transform, $"Walls_{room.Id}",
                               RoomMeshBuilder.BuildRoomWalls(room, layout, ceiling, wallThickness), mats.Wall, true);
 
-            // No collider on ceilings: the player cannot jump 3 m, and a collider up there would give the
-            // NavMesh bake a second walkable surface above the floor.
             if (spec.GenerateCeiling)
-                AddMeshObject(holder.transform, $"Ceiling_{room.Id}",
-                              RoomMeshBuilder.BuildRoomCeiling(room, ceiling), mats.Ceiling, false);
+                AddCeiling(holder.transform, $"Ceiling_{room.Id}", RoomMeshBuilder.BuildRoomCeiling(room, ceiling));
 
             // ------------------------------------------------------------ the hand-built room prefab
             //
@@ -347,8 +346,8 @@ namespace LevelGen.Unity
                           RoomMeshBuilder.BuildCorridorFloor(corridor), mats.CorridorFloor, true);
             AddMeshObject(holder.transform, $"Walls_{corridor.Id}",
                           RoomMeshBuilder.BuildCorridorWalls(corridor, ceiling, wallThickness), mats.Wall, true);
-            AddMeshObject(holder.transform, $"Ceiling_{corridor.Id}",
-                          RoomMeshBuilder.BuildCorridorCeiling(corridor, ceiling), mats.Ceiling, false);
+            AddCeiling(holder.transform, $"Ceiling_{corridor.Id}",
+                       RoomMeshBuilder.BuildCorridorCeiling(corridor, ceiling));
 
             if (corridor.Props != null && corridor.Props.Count > 0)
                 propCount += SpawnProps(Group(holder.transform, PropsGroupName), corridor.Props, p);
@@ -383,10 +382,11 @@ namespace LevelGen.Unity
 
                 PropPrefabEntry entry = p.FindPropPrefab(prop.Type);
                 GameObject go = entry != null
-                    ? PropBuilder.BuildFromPrefab(parent, prop, propIndex, entry.prefab, entry.addColliderIfMissing)
+                    ? PropBuilder.BuildFromPrefab(parent, prop, propIndex, entry)
                     : PropBuilder.Build(parent, prop, propIndex, mats);
 
                 if (go == null) continue;
+                if (entry != null && entry.fit != PropFitMode.None) fittedPrefabs++;
                 propIndex++;
                 n++;
             }
@@ -407,11 +407,11 @@ namespace LevelGen.Unity
 
                 LightPrefabEntry entry = p.FindLightPrefab(src.Type);
                 GameObject go = entry != null
-                    ? LightRig.BuildFixtureFromPrefab(parent, src, lightIndex, entry.prefab, ceiling,
-                                                      entry.applyDataToLight, yaw)
+                    ? LightRig.BuildFixtureFromPrefab(parent, src, lightIndex, entry, ceiling, yaw)
                     : LightRig.BuildFixture(parent, src, lightIndex, ceiling, mats, yaw);
 
                 if (go == null) continue;
+                if (entry != null && entry.fitToFixture) fittedPrefabs++;
                 lightIndex++;
                 n++;
             }
@@ -448,6 +448,24 @@ namespace LevelGen.Unity
             // ever free it.
             if (mesh != null) runtimeMeshes.Add(mesh);
 
+            return go;
+        }
+
+        /// <summary>
+        /// A ceiling WITH a MeshCollider, so a player standing on a 1.8 m shelf (eye 1.6 m) or jumping next to
+        /// furniture cannot poke through it. The mesh normals face down and PhysX mesh colliders are one-sided
+        /// for that front face, which is the side the player approaches from.
+        ///
+        /// Kept out of the NavMesh: a NavMeshModifier with ignoreFromBuild = true. The runtime NavMeshSurface
+        /// uses CollectObjects.Children, which gathers every active NavMeshModifier under "Level" and passes
+        /// it to the source collector as a NavMeshBuildMarkup (ignoreFromBuild, applyToChildren = true), so
+        /// the collector drops this object's collider from the bake sources - no walkable surface on the roof.
+        /// </summary>
+        GameObject AddCeiling(Transform parent, string name, Mesh mesh)
+        {
+            GameObject go = AddMeshObject(parent, name, mesh, mats.Ceiling, true);
+            var mod = go.AddComponent<NavMeshModifier>();
+            mod.ignoreFromBuild = true;
             return go;
         }
 

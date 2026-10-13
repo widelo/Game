@@ -36,8 +36,40 @@ MonoBehaviour:
   - {fileID: 11400000, guid: bd51cb968739f204c82e2fae9c34ad47, type: 2}
   - {fileID: 11400000, guid: 31c596bfb78efef458e10798fe07b073, type: 2}
   - {fileID: 11400000, guid: 219a029e2fb46224298f3bf6f16b0fec, type: 2}
-  propPrefabs: []
-  lightPrefabs: []
+  propPrefabs:
+  - type: 0
+    prefab: {fileID: 8630640014681758926, guid: 2a3b3a882d9cfc74392ec24693855ae8, type: 3}
+    addColliderIfMissing: 1
+    fit: 1
+    groundToFloor: 1
+    centreXZ: 1
+    extraRotationEuler: {x: 0, y: 0, z: 0}
+    keepPrefabColliders: 0
+  - type: 10
+    prefab: {fileID: 8630640014681758926, guid: 2a3b3a882d9cfc74392ec24693855ae8, type: 3}
+    addColliderIfMissing: 1
+    fit: 1
+    groundToFloor: 1
+    centreXZ: 1
+    extraRotationEuler: {x: 0, y: 0, z: 0}
+    keepPrefabColliders: 0
+  - type: 3
+    prefab: {fileID: 4731351843039842299, guid: ffef9f01aae789444bca9ea9c417f933, type: 3}
+    addColliderIfMissing: 1
+    fit: 2
+    groundToFloor: 1
+    centreXZ: 1
+    extraRotationEuler: {x: 0, y: 0, z: 0}
+    keepPrefabColliders: 0
+  lightPrefabs:
+  - type: 3
+    prefab: {fileID: 8444034111214298401, guid: c908ed6afbf11614f9e321278879d6f7, type: 3}
+    applyDataToLight: 1
+    disableExtraLights: 1
+    fitToFixture: 1
+    fixtureHeightMetres: 0.15
+    extraRotationEuler: {x: 0, y: 0, z: 0}
+    mountOffset: {x: 0, y: -0.05, z: 0}
   wallThickness: 0.25
   markerSize: 0.5
   floorMaterial: {fileID: 0}

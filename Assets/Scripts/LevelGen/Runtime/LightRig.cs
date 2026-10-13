@@ -114,7 +114,7 @@ namespace LevelGen.Unity
                 {
                     float y = Mathf.Min(h + 0.05f, ceilingHeight - 0.05f);
                     var strip = GenPrimitives.Part(root.transform, "Strip", GenPrimitives.Box, lit,
-                        new Vector3(0f, y, 0f), new Vector3(1.2f, 0.08f, 0.15f), Quaternion.identity);
+                        new Vector3(0f, y, 0f), new Vector3(0.15f, 0.08f, 1.2f), Quaternion.identity); // long axis = local Z = corridor run
                     emissive = strip.GetComponent<MeshRenderer>();
                     break;
                 }
@@ -192,6 +192,35 @@ namespace LevelGen.Unity
                                                         GameObject prefab, float ceilingHeight,
                                                         bool applyDataToLight, float yawDeg)
         {
+            return BuildFixtureFromPrefabCore(parent, src, index, prefab, ceilingHeight, applyDataToLight, yawDeg,
+                                              null);
+        }
+
+        /// <summary>
+        /// <see cref="BuildFixtureFromPrefab(Transform, LightSource, int, GameObject, float, bool, float)"/>
+        /// driven by a <see cref="LightPrefabEntry"/>; this is what <see cref="LevelBuilder"/> uses. On top of
+        /// the placement / light / flicker contract above it:
+        ///  * rotates the root by <paramref name="yawDeg"/> (the corridor run for CorridorStrip, as the
+        ///    primitive strip) then by <see cref="LightPrefabEntry.extraRotationEuler"/>;
+        ///  * with <see cref="LightPrefabEntry.disableExtraLights"/>, keeps only the first Light enabled;
+        ///  * with <see cref="LightPrefabEntry.fitToFixture"/>, uniformly scales the fixture to
+        ///    <see cref="LightPrefabEntry.fixtureHeightMetres"/> and re-seats it: ceiling-mounted fixtures hang
+        ///    with their TOP on the ceiling, desk lamps stand with their BASE that far below the fixture height,
+        ///    sconces are centred on the fixture height; all are centred on the fixture xz;
+        ///  * finally offsets the root by <see cref="LightPrefabEntry.mountOffset"/> in the yawed frame.
+        /// </summary>
+        public static GameObject BuildFixtureFromPrefab(Transform parent, LightSource src, int index,
+                                                        LightPrefabEntry entry, float ceilingHeight, float yawDeg)
+        {
+            if (entry == null) return null;
+            return BuildFixtureFromPrefabCore(parent, src, index, entry.prefab, ceilingHeight, entry.applyDataToLight,
+                                              yawDeg, entry);
+        }
+
+        static GameObject BuildFixtureFromPrefabCore(Transform parent, LightSource src, int index,
+                                                     GameObject prefab, float ceilingHeight,
+                                                     bool applyDataToLight, float yawDeg, LightPrefabEntry entry)
+        {
             if (src == null || prefab == null) return null;
 
             bool ceilingMounted = src.Type == CoreLightType.CeilingLamp || src.Type == CoreLightType.CorridorStrip;
@@ -202,6 +231,9 @@ namespace LevelGen.Unity
             root.name = $"Light_{src.Type}_{index}_{prefab.name}";
             root.transform.localPosition = new Vector3((float)src.Position.X, y, (float)src.Position.Z);
             root.transform.localRotation = Quaternion.Euler(0f, yawDeg, 0f);
+
+            if (entry != null)
+                PlaceFromEntry(root, entry, src.Type, ceilingMounted, y, h, yawDeg);
 
             Light light = root.GetComponentInChildren<Light>(true);
             if (light == null)
@@ -246,6 +278,39 @@ namespace LevelGen.Unity
             }
 
             return root;
+        }
+
+        /// <summary>Entry-driven rotation, extra-light culling, fitting and mount offset for a prefab fixture.</summary>
+        static void PlaceFromEntry(GameObject root, LightPrefabEntry entry, CoreLightType type, bool ceilingMounted,
+                                   float mountY, float fixtureY, float yawDeg)
+        {
+            Transform t = root.transform;
+            Quaternion yaw = Quaternion.Euler(0f, yawDeg, 0f);
+            t.localRotation = yaw * Quaternion.Euler(entry.extraRotationEuler);
+
+            if (entry.disableExtraLights)
+            {
+                Light[] all = root.GetComponentsInChildren<Light>(true);
+                for (int i = 1; i < all.Length; i++)
+                    if (all[i] != null) all[i].enabled = false;
+            }
+
+            if (entry.fitToFixture)
+            {
+                float size = Mathf.Max(0.01f, entry.fixtureHeightMetres);
+                ModelFit.FitToHeight(root, size, false, true);
+
+                // Re-seat vertically in world space (the parent "Lights" group is unrotated / unscaled).
+                Bounds b = ModelFit.RendererBounds(root);
+                float dy;
+                if (ceilingMounted)                       dy = mountY - b.max.y;             // hangs from ceiling
+                else if (type == CoreLightType.DeskLamp)  dy = (fixtureY - size) - b.min.y;  // stands under shade
+                else                                      dy = fixtureY - b.center.y;        // sconce: centred
+                t.position += new Vector3(0f, dy, 0f);
+            }
+
+            if (entry.mountOffset != Vector3.zero)
+                t.localPosition += yaw * entry.mountOffset;
         }
 
         /// <summary>MeshRenderers in <paramref name="root"/> whose shared material declares the "_EMISSION" keyword.</summary>
