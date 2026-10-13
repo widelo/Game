@@ -112,8 +112,9 @@ agent radius 0.5 m, height 2 m) by collecting the colliders it just created.
 
 Two details that explain odd-looking decisions in the code:
 
-- **Ceilings have no colliders.** A collider 3 m up is a second walkable surface as far as the bake is
-  concerned, and the enemy would happily patrol the ceiling. No collider, no bake.
+- **Ceilings collide but are not baked.** Ceilings carry a `MeshCollider` (so you cannot jump through one),
+  but a collider 3 m up is a second walkable surface as far as the bake is concerned, so each ceiling also
+  gets a `NavMeshModifier` with `ignoreFromBuild` and the bake skips it.
 - The verifier asserts that **no NavMesh vertex sits above y = 0.5 m**, which catches exactly that bug class
   (a bake on a ceiling or on a tabletop).
 
@@ -195,3 +196,18 @@ tree, and the loop pass is forbidden from attaching a second corridor to it. The
 If you want a *specific* room to be the spawn room, `Assets/LevelGen/Templates/SpawnRoom_OneDoor.asset` shows
 how: a template with `affinity = SpawnOnly`, `maxDoors = 1`, and `forcedType = Lobby`. Point its `prefab` field
 at your own prefab and your hand-built lobby becomes the spawn room, with one entrance, in every level.
+
+### "Where does the monster spawn, and how does it find me?"
+
+**Spawn:** after every build, `EnemySpawner` ranks rooms by **graph distance** from your spawn room — the
+number of corridors between them (`layout.BfsDistances`), not straight-line metres — and puts the monster in
+the **farthest** one (ties broken at random). So it always starts as many corridors away as the level allows.
+
+**Finding you:** it is a `NavMeshAgent` on the same NavMesh the level just baked, so it can only walk where
+you can walk and always takes a real route through doorways and corridors. The placeholder brain
+(`StalkerBrain`) patrols rooms, investigates when it hears you sprint, chases on line of sight, and on contact
+sends you back to the green spawn cube. The headless verifier proves, for every seed, that the monster stands
+on the NavMesh and has a complete path to your spawn.
+
+**Changing it:** the AI is one swappable class — implement `IEnemyBrain` and change the single line in
+`EnemySpawner.CreateBrain()`. See EXTENDING §10.

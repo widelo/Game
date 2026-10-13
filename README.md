@@ -106,6 +106,35 @@ Numbers from the last full run: 48 edit-mode tests, 7 play-mode tests, 200 seeds
 (average build 23 ms including the NavMesh bake, max 140 ms), materials flat at 63 across 100 rebuilds,
 Windows build 177 MB.
 
+## Demo build
+
+An intermediate build to hand to another team: the generated level with our teammates' imported models
+(hospital beds, gurneys, chairs, LED corridor strips) and a placeholder monster.
+
+**Build the zip** (close the editor first):
+
+```bash
+"$UNITY" -batchmode -nographics -quit -projectPath "$PROJ" \
+         -executeMethod Game.Editor.SceneBootstrap.CreateMainScene -logFile "$PROJ\Logs\bootstrap.log"
+"$UNITY" -batchmode -nographics -quit -projectPath "$PROJ" \
+         -executeMethod Game.Editor.BuildPlayer.Windows64 -logFile "$PROJ\Logs\build.log"
+```
+
+or in the editor: **CS462 > Create Main Scene**, then **CS462 > Build Windows64 Player**. The build step:
+
+- applies the demo player settings (`Game.Editor.DemoSettings.Apply`: product name "CS462 Game", borderless
+  full-screen window (1600x900 when windowed), runs in background, Mono backend, splash hidden where the licence allows);
+- puts `Main.unity` **first** in Build Settings (the exe opens the scene at index 0), `SampleScene` second;
+- builds `Build/Win64/CS462Game.exe`, writes `Build/Win64/README-DEMO.txt`, and zips the folder to
+  **`Build/CS462Game-Win64-demo.zip`**. `Logs/build.log` has a `[BuildPlayer] zip=... via=... size=...` line.
+
+**Run it:** unzip anywhere, run `Win64/CS462Game.exe`. Controls are the table above (`R` same seed, `N` / `P`
+next / previous seed, `Tab` map, `F1` HUD). The monster spawns in the room farthest from you and hunts you
+over the NavMesh; if it catches you, you respawn at the green cube (the spawn marker).
+
+**Known limits:** no textures on generated geometry; the teammate's prefab room is sealed (no doorway yet);
+the monster model and AI are placeholders (`Assets/Scripts/Enemy/StalkerBrain.cs`).
+
 ## Docs
 
 - `docs/ARCHITECTURE.md` — the assemblies, the algorithm, the contracts, the status log.

@@ -5,7 +5,8 @@
     "LevelGen.Core",
     "LevelGen.Unity",
     "Game.Player",
-    "Game.Debug"
+    "Game.Debug",
+    "Game.Enemy"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

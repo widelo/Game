@@ -6,6 +6,7 @@
     "LevelGen.Unity",
     "Game.Player",
     "Game.Debug",
+    "Game.Enemy",
     "Unity.AI.Navigation",
     "Unity.RenderPipelines.Universal.Runtime",
     "Unity.RenderPipelines.Core.Runtime"

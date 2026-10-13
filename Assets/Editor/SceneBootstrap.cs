@@ -60,6 +60,20 @@ namespace Game.Editor
         const string ProfileTypeName = "LevelGen.Unity.LevelGenProfile";
         const string TemplateTypeName = "LevelGen.Unity.RoomTemplateAsset";
 
+        // ---- teammates' imported models, mapped onto the default profile ----
+        const string BedPrefabPath = "Assets/CobleGames/Prefabs/hospital bed.prefab";
+        const string ChairPrefabPath = "Assets/GeniusCrate_Games/Chair_sofa_set(interior)/Prefab/Chair_sofa_set/Chair_01.prefab";
+        const string CorridorLightPrefabPath = "Assets/PolyKebap/LED Light Essentials Pack/Prefabs/ON/LED_Light_3.prefab";
+
+        // ---- placeholder enemy (Game.Enemy assembly, resolved by name so the scene builds without it) ----
+        public const string MonsterModelPath = "Assets/Models/basicmonster.obj";
+        const string EnemySpawnerTypeName = "Game.Enemy.EnemySpawner";
+        const string EnemyHudTypeName = "Game.Enemy.EnemyHud";
+        const float MonsterHeight = 2.8f;
+        const int EnemyCount = 1;
+
+        public const string SampleScenePath = "Assets/Scenes/SampleScene.unity";
+
         [MenuItem("CS462/Create Main Scene")]
         public static void CreateMainScene()
         {
@@ -135,6 +149,9 @@ namespace Game.Editor
             overhead.player = fpc;
             overhead.playerCamera = cam;
 
+            // ---- placeholder enemy ----
+            AddEnemies(builder, playerGo.transform);
+
             // Fog and ambient are owned by LevelBuilder at Build() time now, so they are NOT set here.
             // The sun is only a faint blue wash; the builder's fixtures do the lighting (and may kill it outright).
             var sun = FindDirectionalLight(scene);
@@ -150,13 +167,14 @@ namespace Game.Editor
                 PlayerSettings.colorSpace = ColorSpace.Linear;
                 UnityEngine.Debug.Log("[SceneBootstrap] colorSpace -> Linear");
             }
+            DemoSettings.Apply();
 
             if (!Directory.Exists(SceneFolder)) Directory.CreateDirectory(SceneFolder);
             EditorSceneManager.SaveScene(scene, ScenePath);
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
 
-            AppendSceneToBuildSettings(ScenePath);
+            EnsureBuildSceneOrder();
 
             UnityEngine.Debug.Log("[SceneBootstrap] wrote Assets/Scenes/Main.unity");
         }
@@ -225,20 +243,32 @@ namespace Game.Editor
         }
 
         /// <summary>
-        /// APPENDS Main.unity. Teammates' Assets/Scenes/SampleScene.unity must survive, so the old
-        /// "EditorBuildSettings.scenes = new[]{ Main }" (which silently dropped it) is gone.
+        /// Build Settings order: Main.unity at index 0 (the scene a player build OPENS - the demo exe must start
+        /// in the game, not the template scene), SampleScene.unity second, every other scene after in its
+        /// existing order. Nothing is dropped: teammates' scenes survive. Main and SampleScene are force-enabled;
+        /// other scenes keep their enabled flag. Idempotent; logs the final order either way.
         /// </summary>
-        static void AppendSceneToBuildSettings(string path)
+        [MenuItem("CS462/Fix Build Scene Order")]
+        public static void EnsureBuildSceneOrder()
         {
-            var scenes = EditorBuildSettings.scenes ?? new EditorBuildSettingsScene[0];
-            if (scenes.Any(s => s != null && s.path == path))
-            {
-                UnityEngine.Debug.Log($"[SceneBootstrap] build settings already list {path} ({scenes.Length} scene(s))");
-                return;
-            }
-            EditorBuildSettings.scenes = scenes.Concat(new[] { new EditorBuildSettingsScene(path, true) }).ToArray();
-            UnityEngine.Debug.Log($"[SceneBootstrap] appended {path} to build settings " +
-                                  $"({EditorBuildSettings.scenes.Length} scene(s): {string.Join(", ", EditorBuildSettings.scenes.Select(s => s.path))})");
+            var existing = (EditorBuildSettings.scenes ?? new EditorBuildSettingsScene[0])
+                .Where(s => s != null && !string.IsNullOrEmpty(s.path))
+                .ToList();
+
+            var ordered = new List<EditorBuildSettingsScene> { new EditorBuildSettingsScene(ScenePath, true) };
+            if (File.Exists(SampleScenePath) || existing.Any(s => s.path == SampleScenePath))
+                ordered.Add(new EditorBuildSettingsScene(SampleScenePath, true));
+            foreach (var s in existing)
+                if (s.path != ScenePath && s.path != SampleScenePath && ordered.All(o => o.path != s.path))
+                    ordered.Add(s);
+
+            bool same = ordered.Count == existing.Count &&
+                        ordered.Zip(existing, (a, b) => a.path == b.path && a.enabled == b.enabled).All(x => x);
+            if (!same) EditorBuildSettings.scenes = ordered.ToArray();
+
+            UnityEngine.Debug.Log($"[SceneBootstrap] build scene order {(same ? "already correct" : "updated")}: " +
+                                  string.Join(", ", EditorBuildSettings.scenes.Select((s, i) =>
+                                      $"[{i}] {s.path}{(s.enabled ? "" : " (disabled)")}")));
         }
 
         // =============================================================== generated LevelGen assets
@@ -274,6 +304,9 @@ namespace Game.Editor
             var profile = LoadOrCreate(ProfileAssetPath, profileType);
             if (profile == null) return null;
 
+            // Teammates' furniture / fixture models. Independent of templates, so done before that early-out.
+            ConfigurePrefabMaps(profile);
+
             if (templateType == null)
             {
                 UnityEngine.Debug.LogWarning($"[SceneBootstrap] type {TemplateTypeName} not found - profile created " +
@@ -301,6 +334,179 @@ namespace Game.Editor
             // No AssetDatabase.Refresh() here: a refresh can reimport the asset we just saved and destroy the
             // managed reference callers still hold. Callers re-resolve the asset by path when they need it.
             return profile;
+        }
+
+        // =============================================================== prefab maps (teammates' models)
+
+        /// <summary>
+        /// Maps the teammates' imported models onto the profile's propPrefabs / lightPrefabs. Each entry is found
+        /// by its <c>type</c> value and updated in place, or appended; a missing asset is skipped with a warning
+        /// (its entry, if any, is left alone). Idempotent. Field names follow LevelGen.Unity.PropPrefabEntry /
+        /// LightPrefabEntry; a field the runtime does not have yet warns and is skipped, never throws.
+        /// </summary>
+        static void ConfigurePrefabMaps(ScriptableObject profile)
+        {
+            var so = new SerializedObject(profile);
+            var bed = LoadMapped(BedPrefabPath, "HospitalBed/Gurney");
+            var chair = LoadMapped(ChairPrefabPath, "Chair");
+            var strip = LoadMapped(CorridorLightPrefabPath, "CorridorStrip");
+
+            if (bed != null)
+            {
+                MapProp(so, LevelGen.Core.PropType.HospitalBed, bed, "FitFootprint");
+                MapProp(so, LevelGen.Core.PropType.Gurney, bed, "FitFootprint");
+            }
+            if (chair != null) MapProp(so, LevelGen.Core.PropType.Chair, chair, "UniformToHeight");
+            if (strip != null)
+            {
+                var e = FindOrAppendEntry(so, "lightPrefabs", (int)LevelGen.Core.LightType.CorridorStrip);
+                if (e != null)
+                {
+                    RelObject(e, "prefab", strip);
+                    RelBool(e, "applyDataToLight", true);
+                    RelBool(e, "disableExtraLights", true);
+                    RelBool(e, "fitToFixture", true);
+                    RelFloat(e, "fixtureHeightMetres", 0.15f);
+                    RelVector3(e, "extraRotationEuler", Vector3.zero);
+                    RelVector3(e, "mountOffset", new Vector3(0f, -0.05f, 0f)); // hang just under the ceiling plane
+                    UnityEngine.Debug.Log($"[SceneBootstrap] light map CorridorStrip -> {strip.name} " +
+                                          "(disableExtraLights, applyDataToLight, fitToFixture 0.15 m, mountOffset y=-0.05)");
+                }
+            }
+
+            so.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(profile);
+        }
+
+        static GameObject LoadMapped(string path, string label)
+        {
+            var go = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (go == null)
+                UnityEngine.Debug.LogWarning($"[SceneBootstrap] prefab map {label}: {path} not found - left unmapped (primitives are used)");
+            return go;
+        }
+
+        static void MapProp(SerializedObject so, LevelGen.Core.PropType type, GameObject prefab, string fit)
+        {
+            var e = FindOrAppendEntry(so, "propPrefabs", (int)type);
+            if (e == null) return;
+            // Every field is written, not just the interesting ones: an appended element starts as a COPY of
+            // the previous one, so anything left unwritten would silently inherit another archetype's setting.
+            RelObject(e, "prefab", prefab);
+            RelBool(e, "addColliderIfMissing", true);
+            RelEnumByName(e, "fit", fit);
+            RelBool(e, "groundToFloor", true);
+            RelBool(e, "centreXZ", true);
+            RelVector3(e, "extraRotationEuler", Vector3.zero);
+            RelBool(e, "keepPrefabColliders", false);
+            UnityEngine.Debug.Log($"[SceneBootstrap] prop map {type} -> {prefab.name} (fit {fit}, groundToFloor, centreXZ, keepPrefabColliders false)");
+        }
+
+        /// <summary>Element of array <paramref name="arrayName"/> whose <c>type</c> enum equals <paramref name="typeValue"/>; appended if absent.</summary>
+        static SerializedProperty FindOrAppendEntry(SerializedObject so, string arrayName, int typeValue)
+        {
+            var arr = so.FindProperty(arrayName);
+            if (arr == null || !arr.isArray)
+            {
+                UnityEngine.Debug.LogWarning($"[SceneBootstrap] profile has no serialized array '{arrayName}' - prefab map skipped");
+                return null;
+            }
+            for (int i = 0; i < arr.arraySize; i++)
+            {
+                var el = arr.GetArrayElementAtIndex(i);
+                var key = el.FindPropertyRelative("type");
+                if (key != null && key.intValue == typeValue) return el;
+            }
+            arr.arraySize++;
+            var added = arr.GetArrayElementAtIndex(arr.arraySize - 1);
+            var k = added.FindPropertyRelative("type");
+            if (k == null)
+            {
+                UnityEngine.Debug.LogWarning($"[SceneBootstrap] '{arrayName}' elements have no 'type' field - prefab map skipped");
+                arr.arraySize--;
+                return null;
+            }
+            k.intValue = typeValue;
+            return added;
+        }
+
+        static SerializedProperty Rel(SerializedProperty el, string name)
+        {
+            var p = el.FindPropertyRelative(name);
+            if (p == null)
+                UnityEngine.Debug.LogWarning($"[SceneBootstrap] {el.propertyPath}: no field '{name}' (runtime not updated yet?) - skipped");
+            return p;
+        }
+
+        static void RelBool(SerializedProperty el, string n, bool v) { var p = Rel(el, n); if (p != null) p.boolValue = v; }
+        static void RelFloat(SerializedProperty el, string n, float v) { var p = Rel(el, n); if (p != null) p.floatValue = v; }
+        static void RelObject(SerializedProperty el, string n, UnityEngine.Object v) { var p = Rel(el, n); if (p != null) p.objectReferenceValue = v; }
+        static void RelVector3(SerializedProperty el, string n, Vector3 v) { var p = Rel(el, n); if (p != null) p.vector3Value = v; }
+
+        /// <summary>Sets an enum field by member NAME, so a reordered enum cannot silently pick the wrong mode.</summary>
+        static void RelEnumByName(SerializedProperty el, string n, string member)
+        {
+            var p = Rel(el, n);
+            if (p == null) return;
+            int idx = p.propertyType == SerializedPropertyType.Enum ? Array.IndexOf(p.enumNames, member) : -1;
+            if (idx < 0)
+            {
+                UnityEngine.Debug.LogWarning($"[SceneBootstrap] {p.propertyPath}: enum has no member '{member}' - skipped");
+                return;
+            }
+            p.enumValueIndex = idx;
+        }
+
+        // =============================================================== placeholder enemy
+
+        /// <summary>
+        /// "Enemies" object with Game.Enemy.EnemySpawner + EnemyHud. Both types are resolved by name, so Main.unity
+        /// still builds (enemy-less, with a warning) on a checkout where the Game.Enemy assembly is missing.
+        /// A missing monster model leaves modelPrefab empty, which makes the spawner use its capsule fallback.
+        /// </summary>
+        static void AddEnemies(LevelGen.Unity.LevelBuilder builder, Transform player)
+        {
+            var spawnerType = FindType(EnemySpawnerTypeName);
+            if (spawnerType == null)
+            {
+                UnityEngine.Debug.LogWarning($"[SceneBootstrap] {EnemySpawnerTypeName} not found (Game.Enemy assembly missing?) - " +
+                                             "scene built WITHOUT an enemy");
+                return;
+            }
+
+            var go = new GameObject("Enemies");
+            var spawner = go.AddComponent(spawnerType);
+            var model = AssetDatabase.LoadAssetAtPath<GameObject>(MonsterModelPath);
+            if (model == null)
+                UnityEngine.Debug.LogWarning($"[SceneBootstrap] monster model {MonsterModelPath} not found - modelPrefab left empty, " +
+                                             "the spawner's capsule fallback is used");
+
+            var so = new SerializedObject(spawner);
+            SetObject(so, "builder", builder);
+            SetObject(so, "player", player);
+            SetObject(so, "modelPrefab", model);
+            SetFloat(so, "modelHeight", MonsterHeight);
+            SetBool(so, "spawnOnLevelBuilt", true);
+            SetInt(so, "enemyCount", EnemyCount);
+            so.ApplyModifiedPropertiesWithoutUndo();
+
+            var hudType = FindType(EnemyHudTypeName);
+            if (hudType != null)
+            {
+                var hud = go.AddComponent(hudType);
+                // Optional wiring: only if the HUD exposes a spawner slot (no warning when it does not).
+                var hso = new SerializedObject(hud);
+                var slot = hso.FindProperty("spawner");
+                if (slot != null && slot.propertyType == SerializedPropertyType.ObjectReference)
+                {
+                    slot.objectReferenceValue = spawner;
+                    hso.ApplyModifiedPropertiesWithoutUndo();
+                }
+            }
+            else UnityEngine.Debug.LogWarning($"[SceneBootstrap] {EnemyHudTypeName} not found - no enemy HUD");
+
+            UnityEngine.Debug.Log($"[SceneBootstrap] Enemies: {spawnerType.Name} count={EnemyCount} height={MonsterHeight} " +
+                                  $"model={(model != null ? MonsterModelPath : "(capsule fallback)")} hud={(hudType != null)}");
         }
 
         static void ConfigureProcedural(ScriptableObject asset)

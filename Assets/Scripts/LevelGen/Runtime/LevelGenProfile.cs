@@ -30,6 +30,39 @@ namespace LevelGen.Unity
                  "at all. Turn this off for a prefab whose own colliders are authored (or that is decoration " +
                  "the player should walk through).")]
         public bool addColliderIfMissing = true;
+
+        [Tooltip("How the prefab is scaled to the footprint Core reserved (Prop SizeX x Height x SizeZ). " +
+                 "FitFootprint stretches per axis; the Uniform modes keep proportions.")]
+        public PropFitMode fit = PropFitMode.FitFootprint;
+
+        [Tooltip("After fitting, move the model so its lowest point is on the floor.")]
+        public bool groundToFloor = true;
+
+        [Tooltip("After fitting, move the model so its bounds are centred on the prop position (fixes models " +
+                 "whose pivot is far from their geometry).")]
+        public bool centreXZ = true;
+
+        [Tooltip("Extra local rotation applied to the model before fitting, e.g. (-90, 0, 0) for a Z-up export.")]
+        public Vector3 extraRotationEuler;
+
+        [Tooltip("Keep the prefab's own colliders. Off strips every Collider from the instance and relies on " +
+                 "the root footprint BoxCollider (still subject to addColliderIfMissing).")]
+        public bool keepPrefabColliders = true;
+    }
+
+    /// <summary>How a prop prefab is scaled to the footprint Core reserved for it.</summary>
+    public enum PropFitMode
+    {
+        /// <summary>Prefab's own scale. Grounding / centring still apply.</summary>
+        None,
+        /// <summary>Per-axis scale to SizeX x Height x SizeZ. The model's longest horizontal axis is first
+        /// turned 90 degrees if needed to lie along the footprint's longest horizontal axis.</summary>
+        FitFootprint,
+        /// <summary>Uniform scale so the model is exactly the prop Height tall.</summary>
+        UniformToHeight,
+        /// <summary>Uniform scale so the model fits inside SizeX x SizeZ (height unconstrained). Uses the same
+        /// longest-axis alignment as FitFootprint.</summary>
+        UniformToFootprint
     }
 
     /// <summary>Maps one light fixture kind onto a teammate's prefab. Unmapped kinds fall back to primitives.</summary>
@@ -47,6 +80,21 @@ namespace LevelGen.Unity
                  "Turn this off to keep the prefab's own hand-tuned light values (the generator still " +
                  "switches the Light off for a dead fixture and still attaches the flicker).")]
         public bool applyDataToLight = true;
+
+        [Tooltip("Keep only the FIRST Light in the prefab enabled; every other Light gets enabled = false " +
+                 "(some fixture packs ship several point lights per lamp, which multiplies the per-pixel cost).")]
+        public bool disableExtraLights = true;
+
+        [Tooltip("Uniformly scale the fixture to fixtureHeightMetres tall.")]
+        public bool fitToFixture = false;
+
+        [Min(0.01f)] public float fixtureHeightMetres = 0.3f;
+
+        [Tooltip("Extra local rotation applied to the fixture model (after the corridor yaw).")]
+        public Vector3 extraRotationEuler;
+
+        [Tooltip("Offset in the fixture's yawed frame, applied after placement and fitting.")]
+        public Vector3 mountOffset;
     }
 
     [CreateAssetMenu(menuName = "CS462/Level Gen Profile", fileName = "LevelGenProfile")]

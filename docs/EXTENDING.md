@@ -63,7 +63,8 @@ By default props are grey boxes sized from `PropDims`. To use real art — e.g. 
    will spawn facing into the wall.
 4. Check the real footprint against `PropDims` in `LevelGen.Core`. The placer reserves the *declared* box, so
    a model wider than its declaration will clip walls and other furniture. If it is genuinely a different size,
-   change `PropDims` (a Core change — see §4) rather than scaling the prefab to fit a lie.
+   change `PropDims` (a Core change — see §4) rather than scaling the prefab to fit a lie. For imported models
+   whose pivot, scale or up-axis is off, use the entry's fit options instead of editing the asset — see §9.
 5. Give it a collider that matches the footprint. Props are NavMesh obstacles; no collider means the enemy
    walks through your bed.
 
@@ -195,6 +196,47 @@ When something fails, the seed is in the log line. Set that seed in the builder 
 editor; do not debug from the aggregate.
 
 ---
+
+## 9. Fit options for imported models
+
+Store-bought models rarely have their pivot at the footprint centre, their base at `y = 0`, or a sane scale.
+Each prefab-map entry fixes that at spawn time (via `LevelGen.Unity.ModelFit`), so the asset stays untouched:
+
+| `PropPrefabEntry` field | What it does |
+|---|---|
+| `fit` | `None` (prefab's own scale) · `FitFootprint` (stretch per axis to SizeX x Height x SizeZ) · `UniformToHeight` (uniform scale to the prop Height) · `UniformToFootprint` (uniform, fits inside SizeX x SizeZ) |
+| `groundToFloor` | after fitting, move the lowest point onto the floor |
+| `centreXZ` | after fitting, centre the bounds on the prop position (fixes off-centre pivots) |
+| `extraRotationEuler` | rotate the model first, e.g. `(-90, 0, 0)` for a Z-up export |
+| `keepPrefabColliders` | off = strip the model's colliders and use the footprint BoxCollider instead |
+
+| `LightPrefabEntry` field | What it does |
+|---|---|
+| `disableExtraLights` | keep only the first `Light` in the prefab (packs that ship 3 lights per lamp triple the cost) |
+| `fitToFixture` + `fixtureHeightMetres` | uniformly scale the fixture to that height |
+| `extraRotationEuler` | extra rotation after the corridor yaw |
+| `mountOffset` | offset in the fixture's yawed frame, e.g. `y = -0.05` to hang just under the ceiling |
+
+`CS462 > Create Main Scene` writes the current defaults (bed + gurney = `FitFootprint`, chair =
+`UniformToHeight`, corridor strip = LED_Light_3 fitted to 0.15 m). `HeadlessVerify` fails if a fitted prop's
+renderer bounds poke more than 0.3 m outside its Core footprint, so a bad fit shows up in the 20-seed run.
+
+## 10. The enemy seam (`IEnemyBrain`)
+
+The monster is three pieces in `Assets/Scripts/Enemy` (assembly `Game.Enemy`): `EnemySpawner` (spawns after
+every `OnLevelBuilt`, farthest room first), `EnemyAgent` (the host: NavMeshAgent, the "caught → respawn"
+consequence, cooldown) and the **brain**, which is the only part you replace:
+
+```csharp
+public interface IEnemyBrain { void Initialise(EnemyContext ctx); void Tick(float dt); }
+```
+
+`EnemyContext` gives you the layout, builder, player transform, the NavMeshAgent (already on the baked mesh)
+and an `OnEvent` callback: call `OnEvent("caught")` when you catch the player and `OnEvent("state:Name")` on
+state changes so the HUD shows them. To swap AI, implement the interface and change the one line in
+`EnemySpawner.CreateBrain()` (`return new StalkerBrain();`). `Initialise` is re-called after every catch,
+so it must fully reset. Spawner settings (`enemyCount`, `modelPrefab`, `modelHeight`) are authored by
+`SceneBootstrap` — change them there, not in the scene.
 
 ## What NOT to touch
 
