@@ -102,7 +102,9 @@ namespace Game.Editor
             if (summary.result == BuildResult.Succeeded)
             {
                 UnityEngine.Debug.Log(line);
-                PackageDemo(directory, zipName);
+                // WebGL's output path IS the folder to ship; for an .exe or .app the folder that holds it is.
+                string demoDir = target == BuildTarget.WebGL ? absolute : directory;
+                PackageDemo(demoDir, zipName);
                 EditorApplication.Exit(0);
                 return;
             }
@@ -229,6 +231,13 @@ CONTROLS
   L                flat-light everything (see through the dark)
   F1               toggle the HUD
   Tab              overhead map - WASD pans, scroll zooms, Home refits
+
+PLATFORM NOTES
+  Windows: unzip, run CS462Game.exe. If SmartScreen warns, choose ""More info"" > ""Run anyway"" (unsigned build).
+  macOS:   unzip, right-click CS462Game.app > Open the first time (unsigned, not notarized), or run
+           xattr -dr com.apple.quarantine CS462Game.app
+  WebGL:   must be served over http, not opened from the file system. In the unzipped folder run
+           python3 -m http.server 8000   then open http://localhost:8000 in Chrome/Edge/Firefox.
 
 KNOWN LIMITS
   - No textures on generated geometry (floors, walls, ceilings are flat colours).

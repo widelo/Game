@@ -20,6 +20,18 @@ namespace Game.Editor
         [MenuItem("CS462/Apply Demo Player Settings")]
         public static void Apply()
         {
+            // WebGL: keep Brotli (smallest download) but let the loader decompress in JavaScript when the host
+            // does not send Content-Encoding headers (plain static hosts, python -m http.server, GitHub Pages).
+            try
+            {
+                if (!PlayerSettings.WebGL.decompressionFallback)
+                {
+                    PlayerSettings.WebGL.decompressionFallback = true;
+                    UnityEngine.Debug.Log("[DemoSettings] WebGL decompressionFallback -> true");
+                }
+            }
+            catch (System.Exception e) { UnityEngine.Debug.LogWarning("[DemoSettings] WebGL settings not applied: " + e.Message); }
+
             var changes = new List<string>();
 
             if (PlayerSettings.productName != ProductName)
