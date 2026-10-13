@@ -24,10 +24,33 @@ namespace Game.Editor
         const string ZipName = "CS462Game-Win64-demo.zip";
 
         [MenuItem("CS462/Build Windows64 Player")]
-        public static void Windows64()
+        public static void Windows64() => Build(BuildTarget.StandaloneWindows64, DefaultOutput, ZipName);
+
+        /// <summary>
+        /// macOS player (Intel + Apple Silicon universal). Needs the "Mac Build Support (Mono)" module installed
+        /// for this editor version; without it the build is refused up front with a clear message.
+        /// The .app is unsigned: the sister team must right-click > Open the first time (Gatekeeper).
+        /// </summary>
+        [MenuItem("CS462/Build macOS Player")]
+        public static void MacOS() => Build(BuildTarget.StandaloneOSX, "Build/macOS/CS462Game.app", "CS462Game-macOS-demo.zip");
+
+        /// <summary>WebGL player: runs in any desktop browser, so it is the platform-neutral fallback.</summary>
+        [MenuItem("CS462/Build WebGL Player")]
+        public static void WebGL() => Build(BuildTarget.WebGL, "Build/WebGL", "CS462Game-WebGL-demo.zip");
+
+        static void Build(BuildTarget target, string defaultOutput, string zipName)
         {
             string output = System.Environment.GetEnvironmentVariable("BUILD_OUT");
-            if (string.IsNullOrWhiteSpace(output)) output = DefaultOutput;
+            if (string.IsNullOrWhiteSpace(output)) output = defaultOutput;
+
+            BuildTargetGroup group = target == BuildTarget.WebGL ? BuildTargetGroup.WebGL : BuildTargetGroup.Standalone;
+            if (!BuildPipeline.IsBuildTargetSupported(group, target))
+            {
+                UnityEngine.Debug.LogError($"[BuildPlayer] result=Failed errors=1 size=0 (build module for {target} is not " +
+                                           "installed in this editor; add it through Unity Hub > Installs > Add modules)");
+                if (Application.isBatchMode) EditorApplication.Exit(1);
+                return;
+            }
 
             // Relative paths are resolved against the project root, which is the editor's working directory
             // in batch mode; making it absolute means the log line is unambiguous either way.
@@ -47,7 +70,7 @@ namespace Game.Editor
                 .Select(s => s.path)
                 .ToArray();
 
-            UnityEngine.Debug.Log($"[BuildPlayer] target=StandaloneWindows64 out={absolute} " +
+            UnityEngine.Debug.Log($"[BuildPlayer] target={target} out={absolute} " +
                                   $"scenes={scenes.Length} [{string.Join(", ", scenes)}]");
 
             if (scenes.Length == 0)
@@ -62,8 +85,8 @@ namespace Game.Editor
             {
                 scenes = scenes,
                 locationPathName = absolute,
-                target = BuildTarget.StandaloneWindows64,
-                targetGroup = BuildTargetGroup.Standalone,
+                target = target,
+                targetGroup = group,
                 // Deliberately not BuildOptions.Development: this is the shippable player, so no script
                 // debugging, no profiler and no development console.
                 options = BuildOptions.None,
@@ -79,7 +102,7 @@ namespace Game.Editor
             if (summary.result == BuildResult.Succeeded)
             {
                 UnityEngine.Debug.Log(line);
-                PackageDemo(directory);
+                PackageDemo(directory, zipName);
                 EditorApplication.Exit(0);
                 return;
             }
@@ -91,7 +114,7 @@ namespace Game.Editor
         // ------------------------------------------------------------------ demo packaging
 
         /// <summary>README-DEMO.txt into the build folder, then the folder zipped next to it. Never throws.</summary>
-        static void PackageDemo(string outDir)
+        static void PackageDemo(string outDir, string zipName)
         {
             try
             {
@@ -104,7 +127,7 @@ namespace Game.Editor
                 UnityEngine.Debug.LogWarning($"[BuildPlayer] README-DEMO.txt not written: {e.Message}");
             }
 
-            string zip = Path.Combine(Path.GetDirectoryName(outDir) ?? outDir, ZipName);
+            string zip = Path.Combine(Path.GetDirectoryName(outDir) ?? outDir, zipName);
             string via = Zip(outDir, zip);
             if (via != null && File.Exists(zip))
                 UnityEngine.Debug.Log($"[BuildPlayer] zip={zip} via={via} size={new FileInfo(zip).Length} " +
