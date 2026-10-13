@@ -38,3 +38,6 @@ sysinfo.txt
 # Unity-generated solution / IDE files
 *.slnx
 .vscode/
+
+# Burst WebGL build leftovers
+/Data/
