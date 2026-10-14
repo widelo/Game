@@ -1,0 +1,7 @@
+{
+  "name": "StalkerAI.Editor",
+  "rootNamespace": "CS462.StalkerAI.Editor",
+  "references": ["StalkerAI.Runtime", "LevelGen.Unity", "Game.Player", "Game.Enemy"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true
+}
