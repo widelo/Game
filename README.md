@@ -49,6 +49,7 @@ standing in — its archetype, its **template name** and its **door count**.
 | `CS462/Rebuild Level In Scene` | Rebuilds the level in the open scene in edit mode (no Play needed). |
 | `CS462/Create Default Level Gen Assets` | Creates/repairs `Assets/LevelGen/DefaultLevelGenProfile.asset` and the sample room templates. |
 | `CS462/Apply URP Settings` | Sets the URP asset's additional-light shadows / per-pixel mode / light count. |
+| `CS462/Export Current Level To Prefab` | Freezes the built level into `Assets/LevelGen/Exported/Level_seed<N>/` (prefab + saved meshes + a .txt listing every room and corridor with its dimensions). Open the prefab to inspect or measure a layout without pressing Play. |
 | `CS462/Headless Verify (20 seeds)` | Builds 20 seeds and checks layout, content, NavMesh reachability and template usage. |
 
 The `LevelBuilder` inspector also has **Build (seed)**, **Build random**, **Verify 20 seeds**, and — when the

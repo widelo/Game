@@ -1,0 +1,32 @@
+Level seed 42 - generated 2026-10-15 12:37
+Units: metres. X east, Z north, Y up. Spawn room centre is (0,0).
+
+GLOBAL
+  corridor width       3.20
+  ceiling height       3.00
+  doorway opening      3.20 wide (plus wall thickness each side), full height
+  lattice pitch        30.00  (room centres sit on a 4x4 grid)
+  room size range      7.0 .. 20.0 per axis
+
+ROOMS  id  role     type           template        shape      centre(x,z)        size(x by z)  doors
+    0  Spawn    Lobby          SpawnRoom_OneDoor Ellipse    (    0.0,    0.0)   13.6 x 11.2   1
+    1  Key      PatientRoom    Procedural      Ellipse    (  -30.0,  -30.0)   10.4 x 13.7   2
+    2  Normal   PatientRoom    Procedural      Ellipse    (  -30.0,    0.0)   17.6 x 14.5   4
+    3  Key      NurseStation   Procedural      Rectangle  (  -30.0,   30.0)    9.0 x 8.2    2
+    4  Normal   PatientRoom    Procedural      Ellipse    (  -60.0,  -30.0)   17.6 x 14.0   3
+    5  Normal   Office         Procedural      Rectangle  (  -60.0,    0.0)   16.2 x 8.9    3
+    6  Key      PatientRoom    Procedural      Ellipse    (  -90.0,  -30.0)   16.0 x 13.7   1
+    7  Normal   PatientRoom    Procedural      Rectangle  (  -60.0,   30.0)    7.5 x 11.0   2
+
+CORRIDORS  id  rooms   dir    length  width  from(x,z)        to(x,z)
+    0   1->2   North   15.88   3.20  (  -30.0,  -23.1)  (  -30.0,   -7.3)
+    1   2->3   North   18.66   3.20  (  -30.0,    7.3)  (  -30.0,   25.9)
+    2   1->4   West    16.00   3.20  (  -35.2,  -30.0)  (  -51.2,  -30.0)
+    3   2->5   West    13.09   3.20  (  -38.8,    0.0)  (  -51.9,    0.0)
+    4   4->6   West    13.19   3.20  (  -68.8,  -30.0)  (  -82.0,  -30.0)
+    5   3->7   West    21.74   3.20  (  -34.5,   30.0)  (  -56.2,   30.0)
+    6   0->2   West    14.42   3.20  (   -6.8,    0.0)  (  -21.2,    0.0)
+    7   4->5   North   18.53   3.20  (  -60.0,  -23.0)  (  -60.0,   -4.5)
+    8   5->7   North   20.04   3.20  (  -60.0,    4.5)  (  -60.0,   24.5)
+
+  corridor length  min 13.09  max 21.74  avg 16.84
