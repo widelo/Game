@@ -14,7 +14,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: LevelGen.Unity::LevelGen.Unity.RoomTemplateAsset
   templateName: SpawnRoom_OneDoor
   weight: 1
-  affinity: 1
+  affinity: 0
   fixedSizeX: 0
   fixedSizeZ: 0
   shape: 0

@@ -1,0 +1,37 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c07e194f76766c948ac1bd527e91edd8, type: 3}
+  m_Name: endRoom
+  m_EditorClassIdentifier: LevelGen.Unity::LevelGen.Unity.RoomTemplateAsset
+  templateName: EndRoom
+  weight: 1
+  affinity: 0
+  fixedSizeX: 10
+  fixedSizeZ: 10
+  shape: 0
+  overrideShape: 0
+  doorNorth: 1
+  doorEast: 1
+  doorSouth: 1
+  doorWest: 1
+  minDoors: 1
+  maxDoors: 1
+  useForcedType: 0
+  forcedType: 0
+  generateFloor: 0
+  generateWalls: 0
+  generateCeiling: 0
+  generateProps: 1
+  generateLights: 1
+  prefab: {fileID: 3426446041047763636, guid: 808641b083485614bb5e15c87945535b, type: 3}
+  prefabOffset: {x: 0, y: 0, z: 0}
+  floorMaterialOverride: {fileID: 0}

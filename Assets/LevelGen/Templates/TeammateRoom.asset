@@ -14,24 +14,24 @@ MonoBehaviour:
   m_EditorClassIdentifier: LevelGen.Unity::LevelGen.Unity.RoomTemplateAsset
   templateName: TeammateRoom
   weight: 1
-  affinity: 0
+  affinity: 1
   fixedSizeX: 10.5
   fixedSizeZ: 10
   shape: 0
   overrideShape: 0
-  doorNorth: 1
+  doorNorth: 0
   doorEast: 1
-  doorSouth: 1
-  doorWest: 1
+  doorSouth: 0
+  doorWest: 0
   minDoors: 1
   maxDoors: 1
   useForcedType: 0
   forcedType: 0
-  generateFloor: 1
+  generateFloor: 0
   generateWalls: 0
   generateCeiling: 0
   generateProps: 0
-  generateLights: 0
+  generateLights: 1
   prefab: {fileID: 7984727905463478932, guid: 916a6fa36c13df54abec3545a2b38295, type: 3}
   prefabOffset: {x: 0.012500286, y: 0, z: -0}
   floorMaterialOverride: {fileID: 0}
