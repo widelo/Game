@@ -71,7 +71,7 @@ namespace LevelGen.Tests.PlayMode
                                   $"spawn {_builder.PlayerSpawnPoint})");
             Assert.Less(d, 2f, $"player is {d:F2} m from PlayerSpawnPoint 1 s after the build");
 
-            // 3 s rather than the 2 s the brief asked for: CharacterController.isGrounded flickers on a
+            // 3 s rather than 2 s: CharacterController.isGrounded flickers on a
             // freshly dropped capsule, so the extra second is margin, not patience.
             yield return new WaitForSeconds(2f);
 
@@ -293,7 +293,7 @@ namespace LevelGen.Tests.PlayMode
 
             Assert.IsTrue(fpc.IsGrounded, "the player did not settle back onto the floor within 3 s");
 
-            // NOTE (deviation from the brief, deliberate): the brief asked for |Velocity.y| < 0.5. That is
+            // NOTE: |Velocity.y| < 0.5 would be the obvious assertion, but that is
             // unreachable by construction - FirstPersonController.Move() pins _vertVel to -2 m/s while grounded
             // ("keep the capsule pinned so isGrounded stays true") and then adds one frame of gravity, so a
             // settled player reports Velocity.y of roughly -2.0 to -2.5. Asserting < 0.5 would be a

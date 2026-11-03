@@ -15,8 +15,9 @@ namespace LevelGen.Core
     public enum RoomRole
     {
         Normal,
-        Spawn,   // player start AND exit point (GDD: return to spawn with all keys to escape)
-        Key      // one of the 3 rooms containing a key
+        Spawn,   // player start
+        Key,     // one of the 3 rooms containing a key
+        Exit     // v4: the end-of-level room; its door is locked until every key is collected
     }
 
     /// <summary>Simple 2D vector in the XZ plane. Kept Unity-free so Core is unit-testable without the editor.</summary>
@@ -55,6 +56,13 @@ namespace LevelGen.Core
 
         /// <summary>v3: resolved template (never null after generation).</summary>
         public RoomTemplateSpec Template = RoomTemplateSpec.Procedural();
+
+        /// <summary>
+        /// v4: yaw (0, 90, 180, 270) applied to the template so its allowed door sides face the attached corridors.
+        /// A template authored with a single North doorway is placed rotated 90 to serve an East corridor, and so on.
+        /// The builder rotates the prefab instance by this angle about Y; fixed footprints are swapped X/Z for 90/270.
+        /// </summary>
+        public int TemplateRotationDeg = 0;
 
         /// <summary>Number of corridors attached.</summary>
         public int DoorCount => CorridorIds.Count;
@@ -192,6 +200,19 @@ namespace LevelGen.Core
         public int SpawnMaxDoors = 1;
 
         /// <summary>
+        /// v4: generate an Exit room (RoomRole.Exit): a dead end (one door) as far from the spawn as the lattice
+        /// allows, never a key room. Templates with RoleAffinity.ExitOnly are placed there. False = no exit room
+        /// (the old "return to spawn" rule applies and gameplay treats the spawn room as the exit).
+        /// </summary>
+        public bool ExitRoom = true;
+
+        /// <summary>v4: minimum BFS graph distance (in corridors) from spawn to the exit room when the level has enough rooms.</summary>
+        public int ExitMinDistance = 2;
+
+        /// <summary>v4: allow the generator to rotate templates (0/90/180/270) so their allowed door sides match the lattice.</summary>
+        public bool AllowTemplateRotation = true;
+
+        /// <summary>
         /// v3: room templates the generator may place. Empty = everything procedural. A template is only placed on a
         /// cell whose corridor count and directions satisfy its MinDoors/MaxDoors/AllowedDoors; cells no template fits
         /// fall back to Procedural.
@@ -211,6 +232,9 @@ namespace LevelGen.Core
 
         public Room SpawnRoom => Rooms.Find(r => r.Role == RoomRole.Spawn);
         public IEnumerable<Room> KeyRooms => Rooms.FindAll(r => r.Role == RoomRole.Key);
+
+        /// <summary>v4: the end-of-level room, or null when LevelGenSettings.ExitRoom is false.</summary>
+        public Room ExitRoom => Rooms.Find(r => r.Role == RoomRole.Exit);
 
         public Room GetRoom(int id) => Rooms[id];
 

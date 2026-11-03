@@ -60,6 +60,14 @@ namespace LevelGen.Core
             return dist;
         }
 
+        /// <summary>v4: rooms with <paramref name="role"/>, in room order.</summary>
+        public static IEnumerable<Room> RoomsWithRole(this LevelLayout layout, RoomRole role)
+        {
+            if (layout == null) throw new ArgumentNullException(nameof(layout));
+            foreach (var r in layout.Rooms)
+                if (r != null && r.Role == role) yield return r;
+        }
+
         /// <summary>Every prop in the level: room furniture first (room order), then corridor props.</summary>
         public static IEnumerable<Prop> AllProps(this LevelLayout layout)
         {
@@ -108,6 +116,7 @@ namespace LevelGen.Core
                   .Append(' ').Append(r.Shape.ToString())
                   .Append(' ').Append(r.Type.ToString())
                   .Append(" tpl=").Append(r.TemplateName ?? "<null>")
+                  .Append(" rot=").Append(r.TemplateRotationDeg.ToString(ci))
                   .Append(" cell=").Append(r.CellX.ToString(ci)).Append(',').Append(r.CellY.ToString(ci))
                   .Append(" c=").Append(r.Center.X.ToString("R", ci)).Append(',').Append(r.Center.Z.ToString("R", ci))
                   .Append(" s=").Append(r.SizeX.ToString("R", ci)).Append(',').Append(r.SizeZ.ToString("R", ci))

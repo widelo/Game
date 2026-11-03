@@ -1,0 +1,6 @@
+{
+  "name": "Game.Objectives",
+  "rootNamespace": "Game.Objectives",
+  "references": ["LevelGen.Core", "LevelGen.Unity", "Game.Player"],
+  "autoReferenced": true
+}

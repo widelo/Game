@@ -33,7 +33,7 @@ Quick orientation — who owns what:
      sealed room in the middle of the level cuts it in half. The verifier reports a sealed interior as a
      warning ("prefab authoring") and fails only if the prefab's colliders leak outside the room footprint.
    - **fixedSizeX / fixedSizeZ** → the prefab's footprint in metres, rounded **up** to 0.5 m. Easiest way to
-     get this right: copy what `CS462/Create Default Level Gen Assets` logged for `Floor.prefab`
+     get this right: copy what `CS462/Create Default Level Gen Assets` logged for `Spawn.prefab`
      (`[SceneBootstrap] measured ...`), or just run that measurement logic on yours. Leave both at `0` only if
      you want a procedural footprint.
    - **shape** → `Rectangle` (a prefab room is never an ellipse).
@@ -44,12 +44,50 @@ Quick orientation — who owns what:
      `GenerateWalls` on if you only built the *interior* and want our wall ring around it.
    - **weight** → relative chance of being picked. The plain `Procedural.asset` template sits at `4`, so a
      weight of `1` means your room shows up regularly without taking over the hospital.
-   - **affinity** → `Any`, or `SpawnOnly` / `KeyOnly` / `NeverSpawn` to pin its role.
+   - **affinity** → `Any`, or `SpawnOnly` / `KeyOnly` / `NeverSpawn` / `ExitOnly` to pin its role.
    - **floorMaterialOverride** → optional, if our concrete does not match your room.
 4. Add the asset to `DefaultLevelGenProfile`'s **templates** list.
 5. Verify. The headless verifier checks the prefab was actually instantiated under `Room_<id>_…` and that a
    floor exists under it. If your template is never picked, the per-seed `templates={...}` line will show it
    missing — usually a footprint that does not fit a cell, or door flags no cell can satisfy.
+
+### Prefab rooms: author ONE doorway side and flag it; the generator rotates your room
+
+You do not need a doorway on every side, or a doorway on the "right" side. Build the room with **one**
+doorway, on whichever side is convenient, tick **only that side**, set **minDoors = maxDoors = 1** and leave
+**allowRotation** on. The generator turns the whole template by 0/90/180/270 degrees
+(`Room.TemplateRotationDeg`, clockwise from above: a North door becomes East at 90) so that the doorway faces
+the one corridor the lattice gives that cell, and the builder yaws the prefab instance by the same angle about
+the room centre. A one-door room therefore fits **any** dead-end cell, which is why `SpawnRoom` and `EndRoom`
+land on at least 15 of the verifier's 20 seeds.
+
+Footprint and offset are measured in the prefab ROOT's local frame, because that is the frame the builder
+rotates and places:
+
+- `fixedSizeX/Z` = the combined renderer bounds in root-local space, rounded **up** to 0.5 m (the generator
+  swaps X/Z itself for 90/270 placements — always author the unrotated size);
+- `prefabOffset` = **minus** the measured geometry centre, so the geometry (not the root) lands on the room
+  centre. It is rotated with the room. This is what makes `End Room.prefab`, whose root sits at
+  (6.27, 0, 0.33) inside the asset, and `Spawn.prefab`, parked at z = -10, come out centred.
+- `generateFloor` is turned off when the prefab has its own floor: a thin renderer at y ≈ 0 covering at least
+  half the footprint *with a collider* (the NavMesh bakes from colliders). No floor collider → we generate one.
+
+`SceneBootstrap.ConfigureOneDoorPrefabRoom` does all of this from code and logs every value; copy it for a new
+room. The verifier proves the result: the instance's yaw equals `TemplateRotationDeg`, and for the spawn and
+end rooms a 1.2 m sphere 1 m inside the doorway touches no wall collider of the prefab — i.e. the opening
+really is on the corridor side.
+
+### Exit room templates (`RoleAffinity.ExitOnly`)
+
+The exit room is a generator role (`RoomRole.Exit`, `LevelLayout.ExitRoom`): a one-door dead end at least
+`exitMinDistance` (default 2) corridors from spawn, never a key room. A template with `affinity = ExitOnly` is
+placed only there — `endRoom.asset` (template name `EndRoom`, `End Room.prefab`, door West, one door) is the
+example. Rules of thumb:
+
+- give it **one** doorway and **maxDoors = 1** (the exit is always a leaf);
+- leave room for the gate: `ObjectiveTracker` stands the locked panel 1 m out into the exit corridor and puts
+  the escape volume 1.5–3 m inside the room from the doorway, so keep that strip clear of furniture colliders;
+- turn the role off for a profile with `exitRoom = false`; the spawn room then doubles as the exit.
 
 ## 2. Add a prop prefab for a `PropType`
 

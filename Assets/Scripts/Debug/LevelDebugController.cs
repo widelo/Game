@@ -198,6 +198,12 @@ namespace Game.Debug
                 if (first) sb.Append("-");
                 sb.AppendLine();
 
+                // v6: the locked exit. "-" = no exit room (the spawn room doubles as the exit).
+                var exit = layout.ExitRoom;
+                sb.AppendLine("exit room: " + (exit != null
+                    ? exit.Id + " (" + exit.TemplateName + ", rot " + exit.TemplateRotationDeg + ")"
+                    : "- (spawn is the exit)"));
+
                 // v3: the template and the door count are what you check when a prefab room or a
                 // single-entrance spawn room looks wrong, so they sit next to the room id in the HUD.
                 int roomId = CurrentRoomId();
@@ -225,8 +231,8 @@ namespace Game.Debug
             sb.AppendLine("WASD  [Shift] sprint  [Space] jump");
             sb.AppendLine("[Ctrl/C] crouch (sprint+crouch = slide)");
 
-            GUI.Box(new Rect(8f, 8f, 320f, 270f), GUIContent.none);
-            GUI.Label(new Rect(16f, 14f, 304f, 258f), sb.ToString());
+            GUI.Box(new Rect(8f, 8f, 320f, 288f), GUIContent.none);
+            GUI.Label(new Rect(16f, 14f, 304f, 276f), sb.ToString());
         }
     }
 }

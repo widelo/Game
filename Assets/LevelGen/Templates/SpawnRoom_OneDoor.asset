@@ -12,26 +12,27 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: c07e194f76766c948ac1bd527e91edd8, type: 3}
   m_Name: SpawnRoom_OneDoor
   m_EditorClassIdentifier: LevelGen.Unity::LevelGen.Unity.RoomTemplateAsset
-  templateName: SpawnRoom_OneDoor
+  templateName: SpawnRoom
   weight: 1
-  affinity: 0
-  fixedSizeX: 0
-  fixedSizeZ: 0
+  affinity: 1
+  fixedSizeX: 10.5
+  fixedSizeZ: 13.5
   shape: 0
   overrideShape: 0
-  doorNorth: 1
+  doorNorth: 0
   doorEast: 1
-  doorSouth: 1
-  doorWest: 1
+  doorSouth: 0
+  doorWest: 0
   minDoors: 1
   maxDoors: 1
+  allowRotation: 1
   useForcedType: 1
   forcedType: 5
-  generateFloor: 1
-  generateWalls: 1
-  generateCeiling: 1
-  generateProps: 1
+  generateFloor: 0
+  generateWalls: 0
+  generateCeiling: 0
+  generateProps: 0
   generateLights: 1
-  prefab: {fileID: 0}
-  prefabOffset: {x: 0, y: 0, z: 0}
+  prefab: {fileID: 7984727905463478932, guid: 916a6fa36c13df54abec3545a2b38295, type: 3}
+  prefabOffset: {x: -0.03249979, y: 0, z: -0.14999962}
   floorMaterialOverride: {fileID: 0}

@@ -14,24 +14,25 @@ MonoBehaviour:
   m_EditorClassIdentifier: LevelGen.Unity::LevelGen.Unity.RoomTemplateAsset
   templateName: EndRoom
   weight: 1
-  affinity: 0
-  fixedSizeX: 10
-  fixedSizeZ: 10
+  affinity: 5
+  fixedSizeX: 10.5
+  fixedSizeZ: 10.5
   shape: 0
   overrideShape: 0
-  doorNorth: 1
-  doorEast: 1
-  doorSouth: 1
+  doorNorth: 0
+  doorEast: 0
+  doorSouth: 0
   doorWest: 1
   minDoors: 1
   maxDoors: 1
+  allowRotation: 1
   useForcedType: 0
   forcedType: 0
   generateFloor: 0
   generateWalls: 0
   generateCeiling: 0
-  generateProps: 1
+  generateProps: 0
   generateLights: 1
   prefab: {fileID: 3426446041047763636, guid: 808641b083485614bb5e15c87945535b, type: 3}
-  prefabOffset: {x: 0, y: 0, z: 0}
+  prefabOffset: {x: -0.117884636, y: 0, z: -0.037730217}
   floorMaterialOverride: {fileID: 0}

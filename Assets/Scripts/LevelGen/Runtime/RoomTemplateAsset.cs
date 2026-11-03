@@ -8,7 +8,8 @@
 //
 // PREFAB AUTHORING CONTRACT (what the generator assumes about `prefab`):
 //  * floor at y = 0 and the room CENTRED on the prefab's origin - the builder places the root at the room
-//    centre with identity rotation, so an off-centre prefab lands off-centre in the level;
+//    centre, rotated about Y by Room.TemplateRotationDeg (v4; prefabOffset is rotated with it), so an
+//    off-centre prefab lands off-centre in the level;
 //  * `fixedSizeX` / `fixedSizeZ` must match the prefab's real footprint in metres, because the generator
 //    reserves exactly that footprint on the lattice and cuts the corridor mouths against it;
 //  * doorways must sit on the CENTRE of the sides ticked in `allowedDoors`: that is where the generator puts
@@ -31,7 +32,7 @@ namespace LevelGen.Unity
         [Tooltip("Relative selection weight among the templates eligible for a cell. 0 = never picked.")]
         [Min(0f)] public float weight = 1f;
 
-        [Tooltip("Which room roles this template may be used for.")]
+        [Tooltip("Which room roles this template may be used for. ExitOnly = only the end-of-level room.")]
         public RoleAffinity affinity = RoleAffinity.Any;
 
         [Header("Footprint")]
@@ -58,6 +59,11 @@ namespace LevelGen.Unity
         [Tooltip("Most corridors this template tolerates.")]
         [Min(0)] public int maxDoors = 4;
 
+        [Tooltip("Let the generator rotate this template (0/90/180/270 about Y) so its door sides face the " +
+                 "corridors the lattice provides. The prefab instance is rotated with it. Off = always placed " +
+                 "as authored. The door ticks above are in the prefab's OWN (unrotated) frame.")]
+        public bool allowRotation = true;
+
         [Header("Archetype")]
         [Tooltip("Force the hospital archetype instead of letting the furnisher roll one.")]
         public bool useForcedType = false;
@@ -75,7 +81,8 @@ namespace LevelGen.Unity
         public bool generateLights = true;
 
         [Header("Unity side")]
-        [Tooltip("Hand-built room prefab. Instantiated at the room centre with identity rotation and y = 0. " +
+        [Tooltip("Hand-built room prefab. Instantiated at the room centre, y = 0, rotated by the room's " +
+                 "TemplateRotationDeg (identity unless the generator rotated the template). " +
                  "Leave empty for a purely procedural template.")]
         public GameObject prefab;
 
@@ -116,6 +123,7 @@ namespace LevelGen.Unity
                 Shape = prefab != null ? RoomShape.Rectangle : shape,
                 OverrideShape = overrideShape,
                 AllowedDoors = AllowedDoors,
+                AllowRotation = allowRotation,
                 MinDoors = Mathf.Max(0, minDoors),
                 MaxDoors = Mathf.Max(Mathf.Max(0, minDoors), maxDoors),
                 ForcedType = useForcedType ? forcedType : (RoomType?)null,

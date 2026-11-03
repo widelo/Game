@@ -30,7 +30,7 @@ namespace LevelGen.Core
             if (n == 0) return errors;
 
             // --- ids, roles, sizes, cells -----------------------------------------
-            int spawnCount = 0, keyCount = 0;
+            int spawnCount = 0, keyCount = 0, exitCount = 0;
             var cellSeen = new Dictionary<string, int>();
             for (int i = 0; i < n; i++)
             {
@@ -39,6 +39,7 @@ namespace LevelGen.Core
                 if (r.Id != i) errors.Add($"Rooms[{i}].Id == {r.Id}, expected {i}");
                 if (r.Role == RoomRole.Spawn) spawnCount++;
                 if (r.Role == RoomRole.Key) keyCount++;
+                if (r.Role == RoomRole.Exit) exitCount++;
 
                 // --- v3: templates ------------------------------------------------
                 var t = r.Template;
@@ -51,19 +52,32 @@ namespace LevelGen.Core
                     if (r.TemplateName != t.Name)
                         errors.Add($"Rooms[{i}].TemplateName '{r.TemplateName}' != Template.Name '{t.Name}'");
 
+                    // --- v4: template rotation ------------------------------------
+                    int rot = r.TemplateRotationDeg;
+                    if (rot != 0 && rot != 90 && rot != 180 && rot != 270)
+                        errors.Add($"Rooms[{i}].TemplateRotationDeg {rot} is not one of 0/90/180/270");
+                    if (rot != 0 && !t.AllowRotation)
+                        errors.Add($"Rooms[{i}] template '{t.Name}' is rotated {rot} but AllowRotation is false");
+                    if (rot != 0 && !s.AllowTemplateRotation)
+                        errors.Add($"Rooms[{i}] template '{t.Name}' is rotated {rot} but settings.AllowTemplateRotation is false");
+                    bool quarter = rot == 90 || rot == 270;
+                    double fixX = quarter ? t.FixedSizeZ : t.FixedSizeX;
+                    double fixZ = quarter ? t.FixedSizeX : t.FixedSizeZ;
+
                     // A fixed footprint overrides the settings size range; a procedural one must stay in it.
-                    if (t.FixedSizeX > 0)
+                    // v4: at 90/270 the authored X/Z footprint is swapped.
+                    if (fixX > 0)
                     {
-                        if (Math.Abs(r.SizeX - t.FixedSizeX) > 1e-9)
-                            errors.Add($"Rooms[{i}].SizeX {r.SizeX.ToString("R", ci)} != template '{t.Name}' FixedSizeX {t.FixedSizeX}");
+                        if (Math.Abs(r.SizeX - fixX) > 1e-9)
+                            errors.Add($"Rooms[{i}].SizeX {r.SizeX.ToString("R", ci)} != template '{t.Name}' fixed footprint X {fixX} (rot {rot})");
                     }
                     else if (r.SizeX < s.MinRoomSize - Eps || r.SizeX > s.MaxRoomSize + Eps)
                         errors.Add($"Rooms[{i}].SizeX {r.SizeX.ToString("R", ci)} outside [{s.MinRoomSize}, {s.MaxRoomSize}]");
 
-                    if (t.FixedSizeZ > 0)
+                    if (fixZ > 0)
                     {
-                        if (Math.Abs(r.SizeZ - t.FixedSizeZ) > 1e-9)
-                            errors.Add($"Rooms[{i}].SizeZ {r.SizeZ.ToString("R", ci)} != template '{t.Name}' FixedSizeZ {t.FixedSizeZ}");
+                        if (Math.Abs(r.SizeZ - fixZ) > 1e-9)
+                            errors.Add($"Rooms[{i}].SizeZ {r.SizeZ.ToString("R", ci)} != template '{t.Name}' fixed footprint Z {fixZ} (rot {rot})");
                     }
                     else if (r.SizeZ < s.MinRoomSize - Eps || r.SizeZ > s.MaxRoomSize + Eps)
                         errors.Add($"Rooms[{i}].SizeZ {r.SizeZ.ToString("R", ci)} outside [{s.MinRoomSize}, {s.MaxRoomSize}]");
@@ -84,8 +98,9 @@ namespace LevelGen.Core
                         errors.Add($"Rooms[{i}] has {r.DoorCount} doors, template '{t.Name}' needs at least {t.MinDoors}");
 
                     var attached = LevelGenerator.AttachedDoorSides(layout, r);
-                    if ((attached & ~t.AllowedDoors) != DoorSides.None)
-                        errors.Add($"Rooms[{i}] has corridors on {attached}, template '{t.Name}' only allows {t.AllowedDoors}");
+                    var allowed = t.AllowedDoors.Rotate(rot);
+                    if ((attached & ~allowed) != DoorSides.None)
+                        errors.Add($"Rooms[{i}] has corridors on {attached}, template '{t.Name}' rotated {rot} only allows {allowed}");
 
                     if (!t.GenerateProps && r.Props != null && r.Props.Count > 0)
                         errors.Add($"Rooms[{i}] uses template '{t.Name}' (GenerateProps false) but has {r.Props.Count} props");
@@ -110,9 +125,42 @@ namespace LevelGen.Core
 
             if (spawnCount != 1) errors.Add($"expected exactly 1 Spawn room, found {spawnCount}");
 
-            int expectedKeys = LevelGenerator.ClampKeyRooms(s.KeyRooms, n);
+            bool hasExit = LevelGenerator.HasExitRoom(s, n);
+            int expectedExits = hasExit ? 1 : 0;
+            if (exitCount != expectedExits)
+                errors.Add($"expected exactly {expectedExits} Exit room(s) (ExitRoom {s.ExitRoom}, {n} rooms), found {exitCount}");
+
+            int expectedKeys = LevelGenerator.ClampKeyRooms(s.KeyRooms, n, hasExit);
             if (keyCount != expectedKeys)
-                errors.Add($"expected exactly {expectedKeys} Key rooms (requested {s.KeyRooms}, clamped for {n} rooms), found {keyCount}");
+                errors.Add($"expected exactly {expectedKeys} Key rooms (requested {s.KeyRooms}, clamped for {n} rooms, exit {hasExit}), found {keyCount}");
+
+            // --- v4: exit placement ----------------------------------------------
+            // The generator reserves the exit as a growth-tree leaf with a door budget of 1 before loop edges are
+            // added, so in a generated layout a non-spawn leaf always exists and the exit is one. The check is
+            // written conditionally (any non-spawn leaf present => exit has one door) so hand-built layouts stay
+            // checkable. Distance: the exit is the farthest tree leaf, and loops never lengthen paths, so it
+            // reaches ExitMinDistance whenever any final-graph leaf does.
+            // (Exit != spawn and exit != key hold by construction: a room has exactly one Role.)
+            if (exitCount == 1)
+            {
+                var exit = layout.ExitRoom;
+                int[] d = layout.BfsDistances(0);
+                bool leafAvailable = false;
+                int bestLeafDist = -1;
+                for (int i = 1; i < n; i++)
+                {
+                    var r = layout.Rooms[i];
+                    if (r == null || r.DoorCount != 1) continue;
+                    leafAvailable = true;
+                    if (d[i] > bestLeafDist) bestLeafDist = d[i];
+                }
+                if (exit.Id == 0)
+                    errors.Add("the Exit room is room 0 (the spawn slot)");
+                if (leafAvailable && exit.DoorCount != 1)
+                    errors.Add($"Rooms[{exit.Id}] is the Exit with {exit.DoorCount} doors, but a non-spawn leaf exists");
+                if (leafAvailable && d[exit.Id] < Math.Min(s.ExitMinDistance, bestLeafDist))
+                    errors.Add($"Rooms[{exit.Id}] is the Exit at distance {d[exit.Id]}, but a leaf at distance {bestLeafDist} exists (ExitMinDistance {s.ExitMinDistance})");
+            }
 
             // --- bounding boxes must not overlap -----------------------------------
             for (int i = 0; i < n; i++)
@@ -243,12 +291,12 @@ namespace LevelGen.Core
                 if (r.Lights == null) { errors.Add($"Rooms[{i}].Lights is null"); continue; }
 
                 bool forcedType = r.Template != null && r.Template.ForcedType.HasValue;
-                if (r.Role == RoomRole.Spawn && r.Type != RoomType.Lobby && !forcedType)
-                    errors.Add($"Rooms[{i}] is the spawn room but Type == {r.Type} (expected Lobby)");
+                if ((r.Role == RoomRole.Spawn || r.Role == RoomRole.Exit) && r.Type != RoomType.Lobby && !forcedType)
+                    errors.Add($"Rooms[{i}] is the {r.Role} room but Type == {r.Type} (expected Lobby)");
 
                 var mouths = RoomFurnisher.RoomMouths(layout, r);
                 double laneWidth = RoomFurnisher.LaneWidth(s);
-                double centreClear = r.Role == RoomRole.Spawn
+                double centreClear = RoomFurnisher.UsesSpawnClearance(r.Role)
                     ? RoomFurnisher.SpawnCentreClearance
                     : RoomFurnisher.CentreClearance;
 
@@ -347,6 +395,8 @@ namespace LevelGen.Core
                 bool dark = ceilingLamps > 0 && enabledCeiling == 0;
                 if (dark && r.Role == RoomRole.Spawn)
                     errors.Add($"Rooms[{i}] is the spawn room and all its ceiling lamps are dead");
+                if (dark && r.Role == RoomRole.Exit)
+                    errors.Add($"Rooms[{i}] is the exit room and all its ceiling lamps are dead");
                 if (dark && r.Role == RoomRole.Key) darkKeyRooms++;
                 if (wantsLights && r.Role == RoomRole.Spawn && enabledAny < 1)
                     errors.Add($"Rooms[{i}] is the spawn room and has no enabled light");

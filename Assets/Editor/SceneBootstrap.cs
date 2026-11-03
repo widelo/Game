@@ -50,9 +50,24 @@ namespace Game.Editor
         const string TeammateTemplatePath = "Assets/LevelGen/Templates/TeammateRoom.asset";
         const string SpawnTemplatePath = "Assets/LevelGen/Templates/SpawnRoom_OneDoor.asset";
         const string ProceduralTemplatePath = "Assets/LevelGen/Templates/Procedural.asset";
+        // Asset file names are kept for compatibility (scenes / profiles reference them by GUID); the
+        // templateName written inside is what Room.TemplateName, the HUD and HeadlessVerify match on.
+        const string EndTemplatePath = "Assets/LevelGen/Templates/endRoom.asset";
 
-        /// <summary>The teammate-built walled room we demonstrate prefab rooms with.</summary>
-        const string FloorPrefabPath = "Assets/RoomFolder/Prefabs/Floor.prefab";
+        /// <summary>Teammate-built walled spawn room: ONE doorway, on its EAST side (root-local frame).</summary>
+        public const string SpawnPrefabPath = "Assets/RoomFolder/Prefabs/Spawn.prefab";
+        /// <summary>Teammate-built walled end room: ONE doorway, on its WEST side (root-local frame).</summary>
+        public const string EndRoomPrefabPath = "Assets/RoomFolder/Prefabs/End Room.prefab";
+        /// <summary>Padlock model hung on the exit gate.</summary>
+        public const string PadlockPrefabPath = "Assets/Nollie Inward Game Assets/Padlock/Prefabs/Padlock.prefab";
+
+        public const string SpawnTemplateName = "SpawnRoom";
+        public const string EndTemplateName = "EndRoom";
+        public const string TeammateTemplateName = "TeammateRoom";
+
+        // ---- objectives (Game.Objectives assembly, resolved by name so the scene builds without it) ----
+        const string ObjectiveTrackerTypeName = "Game.Objectives.ObjectiveTracker";
+        const string ObjectiveHudTypeName = "Game.Objectives.ObjectiveHud";
 
         /// <summary>Renderers whose name (or any ancestor's) contains this are not part of the room footprint.</summary>
         const string FootprintIgnoreToken = "Balloon";
@@ -81,6 +96,8 @@ namespace Game.Editor
             // is a project-level setting the scene has no say over.
             ApplyUrpSettings();
             ScriptableObject profile = EnsureLevelGenAssets();
+            int readable = ReadableMeshes.EnsureReadable(ReadableMeshes.CollectProfilePrefabs());
+            if (readable > 0) UnityEngine.Debug.Log($"[SceneBootstrap] enabled Read/Write on {readable} collider mesh asset(s)");
 
             // AssetDatabase.Refresh/SaveAssets inside EnsureLevelGenAssets can reload the asset, which turns the
             // reference we hold into a destroyed (fake-null) object. Re-resolve it by path before using it.
@@ -151,6 +168,9 @@ namespace Game.Editor
 
             // ---- placeholder enemy ----
             AddEnemies(builder, playerGo.transform);
+
+            // ---- core loop: keys, locked exit, next floor ----
+            AddObjectives(builder, playerGo.transform);
 
             // Fog and ambient are owned by LevelBuilder at Build() time now, so they are NOT set here.
             // The sun is only a faint blue wash; the builder's fixtures do the lighting (and may kill it outright).
@@ -274,8 +294,9 @@ namespace Game.Editor
         // =============================================================== generated LevelGen assets
 
         /// <summary>
-        /// Creates (if missing) Assets/LevelGen/DefaultLevelGenProfile.asset plus the sample room templates,
-        /// and returns the profile. Safe to call repeatedly: existing assets are reused, never overwritten.
+        /// Creates (if missing) the default profile plus the four room templates (Procedural, TeammateRoom,
+        /// SpawnRoom, EndRoom) and returns the profile. Idempotent: existing asset FILES are reused, but every
+        /// template value and the profile's exit / rotation knobs are FORCED from code and logged on each run.
         /// </summary>
         [MenuItem("CS462/Create Default Level Gen Assets")]
         public static void CreateDefaultLevelGenAssetsMenu()
@@ -314,20 +335,27 @@ namespace Game.Editor
                 return profile;
             }
 
-            // 1. Plain procedural template, weight 4: the ordinary generated hospital room. Weighted 4 against the
-            //    prefab room's 1 so the teammate room SHOWS UP without dominating the level.
+            // Every value below is FORCED from code on every run (the teammates hand-edited these assets; the
+            // code is the source of truth) and every write is logged.
+            //
+            // 1. Plain procedural template, weight 4: the ordinary generated hospital room.
             var procedural = LoadOrCreate(ProceduralTemplatePath, templateType);
             ConfigureProcedural(procedural);
 
-            // 2. The teammate's hand-built prefab room, sized from the prefab's own renderers.
+            // 2. A plain Any-affinity prefab sample (Spawn.prefab reused): proves an ordinary room can be a prefab.
             var teammate = LoadOrCreate(TeammateTemplatePath, templateType);
             ConfigureTeammateRoom(teammate);
 
-            // 3. A single-entrance spawn room: procedural, SpawnOnly, one door, forced Lobby archetype.
+            // 3. The spawn room: Spawn.prefab, SpawnOnly, one EAST doorway, rotated by the generator to fit.
             var spawn = LoadOrCreate(SpawnTemplatePath, templateType);
             ConfigureSpawnRoom(spawn);
 
-            AssignTemplates(profile, new[] { procedural, teammate, spawn });
+            // 4. The exit room: End Room.prefab, ExitOnly, one WEST doorway, rotated by the generator to fit.
+            var end = LoadOrCreate(EndTemplatePath, templateType);
+            ConfigureEndRoom(end);
+
+            AssignTemplates(profile, new[] { procedural, teammate, spawn, end });
+            ConfigureProfileExit(profile);
 
             EditorUtility.SetDirty(profile);
             AssetDatabase.SaveAssets();
@@ -509,10 +537,49 @@ namespace Game.Editor
                                   $"model={(model != null ? MonsterModelPath : "(capsule fallback)")} hud={(hudType != null)}");
         }
 
+        /// <summary>
+        /// "Objectives" object with Game.Objectives.ObjectiveTracker (builder, player, padlockPrefab) and
+        /// ObjectiveHud. Resolved by name, like the enemy, so Main.unity still builds without the assembly.
+        /// </summary>
+        static void AddObjectives(LevelGen.Unity.LevelBuilder builder, Transform player)
+        {
+            var trackerType = FindType(ObjectiveTrackerTypeName);
+            if (trackerType == null)
+            {
+                UnityEngine.Debug.LogWarning($"[SceneBootstrap] {ObjectiveTrackerTypeName} not found (Game.Objectives " +
+                                             "assembly missing?) - scene built WITHOUT keys / exit");
+                return;
+            }
+
+            var go = new GameObject("Objectives");
+            var tracker = go.AddComponent(trackerType);
+            var padlock = AssetDatabase.LoadAssetAtPath<GameObject>(PadlockPrefabPath);
+            if (padlock == null)
+                UnityEngine.Debug.LogWarning($"[SceneBootstrap] padlock {PadlockPrefabPath} not found - the gate uses its red box fallback");
+
+            var so = new SerializedObject(tracker);
+            SetObject(so, "builder", builder);
+            SetObject(so, "player", player);
+            SetObject(so, "padlockPrefab", padlock);
+            so.ApplyModifiedPropertiesWithoutUndo();
+
+            var hudType = FindType(ObjectiveHudTypeName);
+            if (hudType != null)
+            {
+                var hud = go.AddComponent(hudType);
+                var hso = new SerializedObject(hud);
+                var slot = hso.FindProperty("tracker");
+                if (slot != null) { slot.objectReferenceValue = tracker; hso.ApplyModifiedPropertiesWithoutUndo(); }
+            }
+            else UnityEngine.Debug.LogWarning($"[SceneBootstrap] {ObjectiveHudTypeName} not found - no objective HUD");
+
+            UnityEngine.Debug.Log($"[SceneBootstrap] Objectives: tracker padlock={(padlock != null ? PadlockPrefabPath : "(red box)")} hud={hudType != null}");
+        }
+
         static void ConfigureProcedural(ScriptableObject asset)
         {
             if (asset == null) return;
-            var so = new SerializedObject(asset);
+            var so = BeginLog(asset);
             // Pinned explicitly: RoomTemplateAsset falls back to the ASSET FILE NAME when templateName is empty,
             // and Room.TemplateName (which HeadlessVerify and the HUD match on) must not change if someone
             // renames the file.
@@ -524,73 +591,174 @@ namespace Game.Editor
             SetInt(so, "minDoors", 1);
             SetInt(so, "maxDoors", 4);
             SetAllowedDoors(so, LevelGen.Core.DoorSides.All);
+            SetBool(so, "allowRotation", true);
+            SetBool(so, "useForcedType", false);
             SetBool(so, "generateFloor", true);
             SetBool(so, "generateWalls", true);
             SetBool(so, "generateCeiling", true);
             SetBool(so, "generateProps", true);
             SetBool(so, "generateLights", true);
             SetObject(so, "prefab", null);
-            so.ApplyModifiedPropertiesWithoutUndo();
-            EditorUtility.SetDirty(asset);
+            SetVector3(so, "prefabOffset", Vector3.zero);
+            EndLog(so, asset);
+        }
+
+        /// <summary>
+        /// Shared setup for a hand-built, walled, ONE-doorway prefab room: footprint and offset measured from the
+        /// prefab in its root-local frame, the doorway side authored in that same frame, rotation allowed so the
+        /// generator can turn the room to face whatever corridor the lattice provides. The prefab brings walls,
+        /// ceiling and furniture; we generate a floor only when the prefab has no floor of its own.
+        /// </summary>
+        static void ConfigureOneDoorPrefabRoom(SerializedObject so, string templateName, string prefabPath,
+                                               LevelGen.Core.RoleAffinity affinity, LevelGen.Core.DoorSides door,
+                                               float weight)
+        {
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+            Vector2 footprint = MeasureFootprintXZ(prefab, out Vector2 prefabCentre);
+            string floorWhy = "prefab missing";
+            // A floor only counts if it has a COLLIDER: the NavMesh bake and the player both need one. A
+            // renderer-only floor (End Room.prefab) means we must still generate ours underneath.
+            bool hasFloor = prefab != null && HasFloorCollider(prefab, footprint, out floorWhy);
+            UnityEngine.Debug.Log($"[SceneBootstrap] {templateName}: floor collider in {prefabPath}: {hasFloor} ({floorWhy})");
+
+            SetString(so, "templateName", templateName);
+            SetFloat(so, "weight", weight);
+            SetEnum(so, "affinity", (int)affinity);
+            SetEnum(so, "shape", (int)LevelGen.Core.RoomShape.Rectangle);
+            SetBool(so, "overrideShape", false);
+            SetFloat(so, "fixedSizeX", footprint.x);
+            SetFloat(so, "fixedSizeZ", footprint.y);
+            SetAllowedDoors(so, door);
+            SetBool(so, "allowRotation", true);
+            SetInt(so, "minDoors", 1);
+            SetInt(so, "maxDoors", 1);
+            // The prefab has its own floor (with a collider, so the NavMesh bakes on it); otherwise generate one.
+            SetBool(so, "generateFloor", !hasFloor);
+            SetBool(so, "generateWalls", false);
+            SetBool(so, "generateCeiling", false);
+            SetBool(so, "generateProps", false);
+            SetBool(so, "generateLights", true);
+            SetObject(so, "prefab", prefab);
+            // The generator places the prefab ROOT at the room centre (rotated by TemplateRotationDeg, and the
+            // offset with it); shift it so the measured geometry centre lands there instead.
+            SetVector3(so, "prefabOffset", new Vector3(-prefabCentre.x, 0f, -prefabCentre.y));
+
+            if (prefab == null)
+                UnityEngine.Debug.LogWarning($"[SceneBootstrap] {templateName}: {prefabPath} missing; template left " +
+                                             $"prefab-less with a {footprint.x} x {footprint.y} m fallback footprint.");
         }
 
         static void ConfigureTeammateRoom(ScriptableObject asset)
         {
             if (asset == null) return;
-
-            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(FloorPrefabPath);
-            Vector2 footprint = MeasureFootprintXZ(prefab, out Vector2 prefabCentre);
-
-            var so = new SerializedObject(asset);
-            SetString(so, "templateName", "TeammateRoom");
-            SetFloat(so, "weight", 1f);
-            SetEnum(so, "affinity", (int)LevelGen.Core.RoleAffinity.Any);
-            SetFloat(so, "fixedSizeX", footprint.x);
-            SetFloat(so, "fixedSizeZ", footprint.y);
-            SetEnum(so, "shape", (int)LevelGen.Core.RoomShape.Rectangle);
-            SetAllowedDoors(so, LevelGen.Core.DoorSides.All);
-            SetInt(so, "minDoors", 1);
-            SetInt(so, "maxDoors", 1); // sealed prefab (no doorways yet) must be a dead end so it never cuts the level
-            // The prefab owns its walls, ceiling, furniture and lamps. We only generate the floor under it.
-            SetBool(so, "generateFloor", true);
-            SetBool(so, "generateWalls", false);
-            SetBool(so, "generateCeiling", false);
-            SetBool(so, "generateProps", false);
-            SetBool(so, "generateLights", false);
-            SetObject(so, "prefab", prefab);
-            // The generator places the prefab's origin at the room centre; shift it so the measured geometry centre
-            // lands there instead (teammate prefabs are not always authored around their origin).
-            SetVector3(so, "prefabOffset", new Vector3(-prefabCentre.x, 0f, -prefabCentre.y));
-            so.ApplyModifiedPropertiesWithoutUndo();
-            EditorUtility.SetDirty(asset);
-
-            if (prefab == null)
-                UnityEngine.Debug.LogWarning($"[SceneBootstrap] TeammateRoom: {FloorPrefabPath} missing; " +
-                                             $"template left prefab-less with a {footprint.x} x {footprint.y} m fallback footprint.");
+            var so = BeginLog(asset);
+            // A plain Any-affinity sample: Spawn.prefab reused as an ordinary dead-end room, so the "a normal room
+            // can be a prefab" path keeps being exercised. One East doorway, rotated to fit.
+            ConfigureOneDoorPrefabRoom(so, TeammateTemplateName, SpawnPrefabPath, LevelGen.Core.RoleAffinity.Any,
+                                       LevelGen.Core.DoorSides.East, 1f);
+            SetBool(so, "useForcedType", false);
+            EndLog(so, asset);
         }
 
         static void ConfigureSpawnRoom(ScriptableObject asset)
         {
             if (asset == null) return;
-            var so = new SerializedObject(asset);
-            SetString(so, "templateName", "SpawnRoom_OneDoor");
-            SetFloat(so, "weight", 1f);
-            SetEnum(so, "affinity", (int)LevelGen.Core.RoleAffinity.SpawnOnly);
-            SetEnum(so, "shape", (int)LevelGen.Core.RoomShape.Rectangle);
-            SetFloat(so, "fixedSizeX", 0f);
-            SetFloat(so, "fixedSizeZ", 0f);
-            SetAllowedDoors(so, LevelGen.Core.DoorSides.All);
-            SetInt(so, "minDoors", 1);
-            SetInt(so, "maxDoors", 1);   // the whole point: one entrance
+            var so = BeginLog(asset);
+            ConfigureOneDoorPrefabRoom(so, SpawnTemplateName, SpawnPrefabPath, LevelGen.Core.RoleAffinity.SpawnOnly,
+                                       LevelGen.Core.DoorSides.East, 1f);
             SetForcedType(so, LevelGen.Core.RoomType.Lobby);
-            SetBool(so, "generateFloor", true);
-            SetBool(so, "generateWalls", true);
-            SetBool(so, "generateCeiling", true);
-            SetBool(so, "generateProps", true);
-            SetBool(so, "generateLights", true);
-            SetObject(so, "prefab", null);
-            so.ApplyModifiedPropertiesWithoutUndo();
-            EditorUtility.SetDirty(asset);
+            EndLog(so, asset);
+        }
+
+        static void ConfigureEndRoom(ScriptableObject asset)
+        {
+            if (asset == null) return;
+            var so = BeginLog(asset);
+            ConfigureOneDoorPrefabRoom(so, EndTemplateName, EndRoomPrefabPath, LevelGen.Core.RoleAffinity.ExitOnly,
+                                       LevelGen.Core.DoorSides.West, 1f);
+            SetBool(so, "useForcedType", false);
+            EndLog(so, asset);
+        }
+
+        /// <summary>Profile v4 knobs: an exit room exists, at least 2 corridors from spawn, templates may rotate.</summary>
+        static void ConfigureProfileExit(ScriptableObject profile)
+        {
+            var so = BeginLog(profile);
+            SetBool(so, "exitRoom", true);
+            SetInt(so, "exitMinDistance", 2);
+            SetBool(so, "allowTemplateRotation", true);
+            EndLog(so, profile);
+        }
+
+        /// <summary>
+        /// Does the prefab bring its own floor? A renderer, in root-local space, that is thin (&lt; 0.5 m), sits at
+        /// y ~ 0 (top within -0.3..0.3 m) and covers at least half the measured footprint, AND carries a Collider
+        /// (the NavMesh bakes from colliders, so a floor without one is not a floor for our purposes).
+        /// </summary>
+        /// <summary>A collider that is wide, flat and at floor level, measured in the prefab root's local frame.</summary>
+        public static bool HasFloorCollider(GameObject prefab, Vector2 footprint, out string why)
+        {
+            // Collider.bounds is empty on a prefab ASSET (no physics scene); measure a throwaway instance instead.
+            GameObject temp = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+            try
+            {
+                temp.transform.position = Vector3.zero;
+                temp.transform.rotation = Quaternion.identity;
+                Physics.SyncTransforms();
+                return HasFloorColliderOnInstance(temp, footprint, out why);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(temp); }
+        }
+
+        static bool HasFloorColliderOnInstance(GameObject instance, Vector2 footprint, out string why)
+        {
+            var root = instance.transform;
+            foreach (var col in instance.GetComponentsInChildren<Collider>(true))
+            {
+                var wb = col.bounds;
+                Vector3 min = root.InverseTransformPoint(wb.min), max = root.InverseTransformPoint(wb.max);
+                float sx = Mathf.Abs(max.x - min.x), sy = Mathf.Abs(max.y - min.y), sz = Mathf.Abs(max.z - min.z);
+                float bottom = Mathf.Min(min.y, max.y);
+                if (sx >= footprint.x * 0.5f && sz >= footprint.y * 0.5f && sy <= 0.6f && bottom > -0.4f && bottom < 0.4f)
+                {
+                    why = $"collider '{col.name}' {sx:F1} x {sz:F1} m, {sy:F2} thick at y {bottom:F2}";
+                    return true;
+                }
+            }
+            why = "no wide flat collider at floor level";
+            return false;
+        }
+
+        public static bool HasFloorLikeRenderer(GameObject prefab, Vector2 footprint, out string why)
+        {
+            why = "no thin renderer at y=0 covering >= 50% of the footprint";
+            if (prefab == null) { why = "prefab null"; return false; }
+            var root = prefab.transform;
+            float need = 0.5f * footprint.x * footprint.y;
+            foreach (var r in prefab.GetComponentsInChildren<Renderer>(true))
+            {
+                if (IgnoredForFootprint(r.transform, root)) continue;
+                var wb = r.bounds;
+                bool any = false; Bounds lb = default;
+                for (int i = 0; i < 8; i++)
+                {
+                    var corner = new Vector3((i & 1) == 0 ? wb.min.x : wb.max.x,
+                                             (i & 2) == 0 ? wb.min.y : wb.max.y,
+                                             (i & 4) == 0 ? wb.min.z : wb.max.z);
+                    var local = root.InverseTransformPoint(corner);
+                    if (!any) { lb = new Bounds(local, Vector3.zero); any = true; } else lb.Encapsulate(local);
+                }
+                if (lb.size.y >= 0.5f || lb.max.y < -0.3f || lb.max.y > 0.3f) continue;
+                if (lb.size.x * lb.size.z < need) continue;
+                if (r.GetComponent<Collider>() == null)
+                {
+                    why = $"'{r.name}' looks like a floor but has no Collider - generating one";
+                    continue;
+                }
+                why = $"'{r.name}' {lb.size.x:F1} x {lb.size.z:F1} m, top y={lb.max.y:F2}, has {r.GetComponent<Collider>().GetType().Name}";
+                return true;
+            }
+            return false;
         }
 
         /// <summary>
@@ -726,13 +894,49 @@ namespace Game.Editor
             return null;
         }
 
-        static void SetInt(SerializedObject so, string n, int v) { var p = Find(so, n); if (p != null) p.intValue = v; }
-        static void SetFloat(SerializedObject so, string n, float v) { var p = Find(so, n); if (p != null) p.floatValue = v; }
-        static void SetBool(SerializedObject so, string n, bool v) { var p = Find(so, n); if (p != null) p.boolValue = v; }
-        static void SetString(SerializedObject so, string n, string v) { var p = Find(so, n); if (p != null) p.stringValue = v; }
-        static void SetEnum(SerializedObject so, string n, int v) { var p = Find(so, n); if (p != null) p.intValue = v; }
-        static void SetObject(SerializedObject so, string n, UnityEngine.Object v) { var p = Find(so, n); if (p != null) p.objectReferenceValue = v; }
-        static void SetVector3(SerializedObject so, string n, Vector3 v) { var p = Find(so, n); if (p != null) p.vector3Value = v; }
+        static void SetInt(SerializedObject so, string n, int v) { var p = Find(so, n); if (p != null) { p.intValue = v; Note(n, v); } }
+        static void SetFloat(SerializedObject so, string n, float v) { var p = Find(so, n); if (p != null) { p.floatValue = v; Note(n, v); } }
+        static void SetBool(SerializedObject so, string n, bool v) { var p = Find(so, n); if (p != null) { p.boolValue = v; Note(n, v); } }
+        static void SetString(SerializedObject so, string n, string v) { var p = Find(so, n); if (p != null) { p.stringValue = v; Note(n, v); } }
+        static void SetEnum(SerializedObject so, string n, int v)
+        {
+            var p = Find(so, n);
+            if (p == null) return;
+            p.intValue = v;
+            string label = p.propertyType == SerializedPropertyType.Enum && v >= 0 && v < p.enumNames.Length ? p.enumNames[v] : v.ToString();
+            Note(n, label);
+        }
+        static void SetObject(SerializedObject so, string n, UnityEngine.Object v)
+        {
+            var p = Find(so, n);
+            if (p == null) return;
+            p.objectReferenceValue = v;
+            Note(n, v != null ? (AssetDatabase.GetAssetPath(v) is string ap && ap.Length > 0 ? ap : v.name) : "null");
+        }
+        static void SetVector3(SerializedObject so, string n, Vector3 v) { var p = Find(so, n); if (p != null) { p.vector3Value = v; Note(n, v.ToString("F3")); } }
+
+        // ---- write log: generated-asset writes between BeginLog and EndLog are collected and printed per asset ----
+        static List<string> _writeLog;
+
+        static SerializedObject BeginLog(ScriptableObject asset)
+        {
+            _writeLog = new List<string>();
+            return new SerializedObject(asset);
+        }
+
+        static void EndLog(SerializedObject so, ScriptableObject asset)
+        {
+            so.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(asset);
+            UnityEngine.Debug.Log($"[SceneBootstrap] {AssetDatabase.GetAssetPath(asset)} <- {string.Join(", ", _writeLog ?? new List<string>())}");
+            _writeLog = null;
+        }
+
+        static void Note(string name, object value)
+        {
+            if (_writeLog == null) return;
+            _writeLog.Add(value is float f ? $"{name}={f:0.###}" : value is bool b ? $"{name}={(b ? "true" : "false")}" : $"{name}={value}");
+        }
 
         /// <summary>
         /// Allowed doors may be authored either as one DoorSides mask or as four bools, depending on how the
@@ -740,6 +944,7 @@ namespace Game.Editor
         /// </summary>
         static void SetAllowedDoors(SerializedObject so, LevelGen.Core.DoorSides sides)
         {
+            Note("allowedDoors", sides);
             var mask = so.FindProperty("allowedDoors") ?? so.FindProperty("doorSides");
             if (mask != null) { mask.intValue = (int)sides; return; }
 
@@ -756,9 +961,9 @@ namespace Game.Editor
         static void SetForcedType(SerializedObject so, LevelGen.Core.RoomType type)
         {
             var p = so.FindProperty("forcedType");
-            if (p != null) p.intValue = (int)type;
+            if (p != null) { p.intValue = (int)type; Note("forcedType", type); }
             TrySetBool(so, "hasForcedType", true);
-            TrySetBool(so, "useForcedType", true);
+            if (TrySetBool(so, "useForcedType", true)) Note("useForcedType", true);
             TrySetBool(so, "forceType", true);
             if (p == null)
                 UnityEngine.Debug.LogWarning("[SceneBootstrap] RoomTemplateAsset has no 'forcedType' - spawn template left un-forced");

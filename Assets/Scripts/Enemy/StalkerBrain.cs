@@ -21,6 +21,7 @@
 using Game.Player;
 using LevelGen.Core;
 using UnityEngine;
+using UnityEngine.AI;
 
 namespace Game.Enemy
 {
@@ -86,13 +87,13 @@ namespace Game.Enemy
                 case State.Chase:
                     if (_sinceSeen >= LoseSightSeconds) { Enter(State.Investigate); break; }
                     _repathTimer -= dt;
-                    if (_repathTimer <= 0f) { _repathTimer = RepathInterval; _ctx.Agent.SetDestination(_lastKnown); }
+                    if (_repathTimer <= 0f) { _repathTimer = RepathInterval; Go(_ctx.Agent, _lastKnown); }
                     break;
 
                 case State.Investigate:
                     if (sees) { Enter(State.Chase); break; }
                     if (hears && (player - _lastKnown).sqrMagnitude > 1f)
-                    { _lastKnown = player; _ctx.Agent.SetDestination(_lastKnown); _lingering = false; }
+                    { _lastKnown = player; Go(_ctx.Agent, _lastKnown); _lingering = false; }
                     if (TickArriveAndLinger(dt)) Enter(State.Patrol);
                     break;
 
@@ -113,7 +114,7 @@ namespace Game.Enemy
             switch (s)
             {
                 case State.Patrol:      a.speed = PatrolSpeed; StartPatrolLeg(); break;
-                case State.Investigate: a.speed = InvestigateSpeed; a.SetDestination(_lastKnown); break;
+                case State.Investigate: a.speed = InvestigateSpeed; Go(a, _lastKnown); break;
                 case State.Chase:       a.speed = ChaseSpeed; _repathTimer = 0f; break;
                 case State.Attack:      a.ResetPath(); break;
             }
@@ -162,7 +163,7 @@ namespace Game.Enemy
             }
             if (pick < 0) return;
             _patrolRoom = pick;
-            _ctx.Agent.SetDestination(_ctx.Builder.RoomWorldCenter(pick));
+            Go(_ctx.Agent, _ctx.Builder.RoomWorldCenter(pick));
         }
 
         float Weight(int room, int[] d)
@@ -205,5 +206,11 @@ namespace Game.Enemy
             v.y = 0f;
             return v.sqrMagnitude > SprintSpeed * SprintSpeed;
         }
+        /// <summary>SetDestination that is a no-op while the agent is disabled or off the NavMesh (level rebuild window).</summary>
+        static void Go(NavMeshAgent agent, Vector3 target)
+        {
+            if (agent != null && agent.isActiveAndEnabled && agent.isOnNavMesh) agent.SetDestination(target);
+        }
+
     }
 }

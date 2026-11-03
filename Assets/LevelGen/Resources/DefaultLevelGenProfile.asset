@@ -24,6 +24,9 @@ MonoBehaviour:
   gridHeight: 4
   ellipseChance: 0.4
   spawnMaxDoors: 1
+  exitRoom: 1
+  exitMinDistance: 2
+  allowTemplateRotation: 1
   ceilingHeight: 3
   mouthClearance: 2
   propSpacing: 0.6
@@ -36,6 +39,7 @@ MonoBehaviour:
   - {fileID: 11400000, guid: bd51cb968739f204c82e2fae9c34ad47, type: 2}
   - {fileID: 11400000, guid: 31c596bfb78efef458e10798fe07b073, type: 2}
   - {fileID: 11400000, guid: 219a029e2fb46224298f3bf6f16b0fec, type: 2}
+  - {fileID: 11400000, guid: e934d7c12650a844aa510b4634913103, type: 2}
   propPrefabs:
   - type: 0
     prefab: {fileID: 8630640014681758926, guid: 2a3b3a882d9cfc74392ec24693855ae8, type: 3}
