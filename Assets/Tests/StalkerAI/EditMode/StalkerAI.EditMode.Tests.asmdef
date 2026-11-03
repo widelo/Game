@@ -1,0 +1,8 @@
+{
+  "name": "StalkerAI.EditMode.Tests",
+  "references": ["StalkerAI.Core"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+  "autoReferenced": false
+}

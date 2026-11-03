@@ -1,0 +1,6 @@
+{
+  "name": "StalkerAI.Runtime",
+  "rootNamespace": "CS462.StalkerAI",
+  "references": ["StalkerAI.Core", "LevelGen.Core", "LevelGen.Unity", "Game.Player"],
+  "autoReferenced": true
+}

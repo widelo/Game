@@ -1,0 +1,85 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 41256ff90b0db3d4bb59d89e45234461, type: 3}
+  m_Name: AStarLevelGenProfile
+  m_EditorClassIdentifier: LevelGen.Unity::LevelGen.Unity.LevelGenProfile
+  minRooms: 5
+  maxRooms: 9
+  keyRooms: 3
+  cellSize: 30
+  minRoomSize: 7
+  maxRoomSize: 20
+  corridorWidth: 3.2
+  loopEdgeChance: 0.35
+  gridWidth: 4
+  gridHeight: 4
+  ellipseChance: 0.4
+  spawnMaxDoors: 1
+  ceilingHeight: 3
+  mouthClearance: 2
+  propSpacing: 0.6
+  lightAreaPerLamp: 45
+  maxLightsPerRoom: 4
+  darkRoomChance: 0.15
+  flickerChance: 0.25
+  corridorLightSpacing: 7
+  templates:
+  - {fileID: 11400000, guid: bd51cb968739f204c82e2fae9c34ad47, type: 2}
+  - {fileID: 11400000, guid: 31c596bfb78efef458e10798fe07b073, type: 2}
+  - {fileID: 11400000, guid: 219a029e2fb46224298f3bf6f16b0fec, type: 2}
+  propPrefabs:
+  - type: 0
+    prefab: {fileID: 8630640014681758926, guid: 2a3b3a882d9cfc74392ec24693855ae8, type: 3}
+    addColliderIfMissing: 1
+    fit: 1
+    groundToFloor: 1
+    centreXZ: 1
+    extraRotationEuler: {x: 0, y: 0, z: 0}
+    keepPrefabColliders: 0
+  - type: 10
+    prefab: {fileID: 8630640014681758926, guid: 2a3b3a882d9cfc74392ec24693855ae8, type: 3}
+    addColliderIfMissing: 1
+    fit: 1
+    groundToFloor: 1
+    centreXZ: 1
+    extraRotationEuler: {x: 0, y: 0, z: 0}
+    keepPrefabColliders: 0
+  - type: 3
+    prefab: {fileID: 4731351843039842299, guid: ffef9f01aae789444bca9ea9c417f933, type: 3}
+    addColliderIfMissing: 1
+    fit: 2
+    groundToFloor: 1
+    centreXZ: 1
+    extraRotationEuler: {x: 0, y: 0, z: 0}
+    keepPrefabColliders: 0
+  lightPrefabs:
+  - type: 3
+    prefab: {fileID: 8444034111214298401, guid: c908ed6afbf11614f9e321278879d6f7, type: 3}
+    applyDataToLight: 1
+    disableExtraLights: 1
+    fitToFixture: 1
+    fixtureHeightMetres: 0.15
+    extraRotationEuler: {x: 0, y: 0, z: 0}
+    mountOffset: {x: 0, y: -0.05, z: 0}
+  wallThickness: 0.25
+  markerSize: 0.5
+  floorMaterial: {fileID: 0}
+  wallMaterial: {fileID: 0}
+  corridorFloorMaterial: {fileID: 0}
+  ceilingMaterial: {fileID: 0}
+  killDirectionalLight: 1
+  ambientLight: {r: 0.015, g: 0.015, b: 0.02, a: 1}
+  fogEnabled: 1
+  fogDensity: 0.028
+  fogColor: {r: 0.02, g: 0.02, b: 0.025, a: 1}
+  bakeNavMesh: 0
+  agentTypeId: 0

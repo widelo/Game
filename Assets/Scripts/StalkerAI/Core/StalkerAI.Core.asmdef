@@ -1,0 +1,7 @@
+{
+  "name": "StalkerAI.Core",
+  "rootNamespace": "CS462.StalkerAI.Core",
+  "references": [],
+  "noEngineReferences": true,
+  "autoReferenced": true
+}
