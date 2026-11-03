@@ -43,7 +43,7 @@ A couple of rules fall out of this and are worth knowing:
 - A room is always smaller than its cell (max 20 m in a 30 m cell), so **every corridor has real length** —
   rooms never touch.
 - The **spawn room is deliberately a dead end**: the generator makes it a leaf of the growth tree and refuses
-  to attach loop corridors to it. One door in, one door out, and that door is also your escape (see §5).
+  to attach loop corridors to it. One door in and out. A second dead end, as far away as the lattice allows, becomes the locked **exit room** (see §5).
 
 ## 2. Rooms
 
@@ -96,14 +96,27 @@ counters, plus the corridor strips. Then the horror dial: roughly **15% of rooms
 fixtures exist, they are just dead) and roughly **25% of lamps flicker**. Fog and near-black ambient light
 are applied by the builder, so you genuinely cannot see across a big room.
 
-## 5. Keys and spawn
+## 5. Keys and the exit
 
-- The starting cell is the **spawn room**, and it is also the **exit**: the objective is to collect all three
-  keys and come back here.
-- **Three** of the other rooms are chosen as **key rooms**, preferring rooms at least two corridors away from
-  spawn so the first key is never sitting in the doorway.
-- Spawn and key positions are exposed as data, so gameplay code places the actual pickups — the generator
-  does not own the key objects.
+The core loop is: **find three keys, unlock the exit, walk out, next floor.**
+
+- The starting cell is the **spawn room**: a dead end with one door (see §1). The walled `Spawn.prefab` is
+  placed there (`SpawnRoom` template), rotated so its doorway faces the corridor.
+- A second dead end is chosen as the **exit room** (`RoomRole.Exit`): one door, and at least **two corridors
+  away from spawn** whenever the level has five or more rooms, so you never start next to it. The walled
+  `End Room.prefab` is placed there (`EndRoom` template, `RoleAffinity.ExitOnly`), rotated to fit the same way.
+- **Three** of the remaining rooms are **key rooms** — never the spawn room, never the exit room — preferring
+  rooms at least two corridors from spawn. On a tiny level the count is clamped to the rooms available.
+- The generator only decides *where*; gameplay (`Game.Objectives.ObjectiveTracker`) places the objects after
+  every build: a glowing key on a small stand at each key room centre (`builder.KeySpawnPoints`, 0.9 m up) and
+  an **exit gate** at the exit doorway (`builder.ExitDoorwayPoint`).
+- The gate is a solid panel with a **padlock**, standing 1 m out into the exit corridor (the corridor is
+  exactly the panel's 3.2 m width, so it seals; inside the room it could be walked around). Walk within
+  1.2 m of a key to pick it up. With all three, the padlock drops, the panel turns translucent green and stops
+  blocking. Step through into the exit room and you have **escaped**: the HUD flashes `ESCAPED - FLOOR 2`
+  and 1.5 s later the next floor (seed + 1) is built and you are dropped at its spawn.
+- If a profile turns the exit room off (`exitRoom = false`) the old rule comes back: the gate marks the
+  spawn doorway without blocking it, and walking back into the spawn room with every key escapes.
 
 ## 6. The NavMesh bake and the enemy-AI contract
 
@@ -132,7 +145,8 @@ and inside it you have:
 | the room graph for patrol routes | `layout.Neighbours(roomId)` |
 | where the player starts | `builder.PlayerSpawnPoint` (a `Vector3`) |
 | a room's world centre | `builder.RoomWorldCenter(roomId)` |
-| the spawn / key rooms | `layout.SpawnRoom`, `layout.KeyRooms` |
+| the spawn / key / exit rooms | `layout.SpawnRoom`, `layout.KeyRooms`, `layout.ExitRoom` |
+| key positions, the exit doorway | `builder.KeySpawnPoints`, `builder.ExitDoorwayPoint` |
 | per-room GameObjects as they appear | `builder.OnRoomBuilt(Room, GameObject)` |
 
 `OnLevelBuilt` fires on **every** rebuild, including when a tester presses `R`, so anything you spawn in
@@ -160,10 +174,11 @@ versions — it is a level ID for a fixed set of settings.
 the room to the prefab's footprint, generates the floor (and optionally walls and ceiling) under it, cuts
 corridor openings only on the sides you allow, and skips furniture and lights so your prefab stays yours.
 
-In other words: we own the *placement* and the *floor*, you own the *contents*. The teammate-built
-`Assets/RoomFolder/Prefabs/Floor.prefab` is already wired up this way as a working example
-(`Assets/LevelGen/Templates/TeammateRoom.asset`) — its footprint was measured off its own renderers rather
-than typed in by hand.
+In other words: we own the *placement* (and the floor, if your prefab has none), you own the *contents*. The
+teammate-built `Assets/RoomFolder/Prefabs/Spawn.prefab` and `End Room.prefab` are wired up this way
+(`SpawnRoom_OneDoor.asset` / `endRoom.asset`, plus `TeammateRoom.asset` as a plain sample) — their footprints
+are measured off their own renderers, and since both bring their own floor, none is generated under them.
+Each has ONE doorway; the generator rotates the room so that doorway faces its corridor (EXTENDING §1).
 
 Authoring rules for the prefab, so the generator can line things up:
 
@@ -193,9 +208,10 @@ a cell where a single corridor arrives from that direction, and treat it as a de
 tree, and the loop pass is forbidden from attaching a second corridor to it. The headless verifier asserts
 `spawnRoom.DoorCount == 1` on every one of its 20 seeds, so it cannot regress quietly.
 
-If you want a *specific* room to be the spawn room, `Assets/LevelGen/Templates/SpawnRoom_OneDoor.asset` shows
-how: a template with `affinity = SpawnOnly`, `maxDoors = 1`, and `forcedType = Lobby`. Point its `prefab` field
-at your own prefab and your hand-built lobby becomes the spawn room, with one entrance, in every level.
+`Assets/LevelGen/Templates/SpawnRoom_OneDoor.asset` (template name `SpawnRoom`) does exactly this with the
+teammate's `Spawn.prefab`: `affinity = SpawnOnly`, one door (East, in the prefab's own frame), rotation
+allowed. `CS462/Create Main Scene` rewrites its values from code every run, so edit `SceneBootstrap` rather
+than the asset if you want to change them.
 
 ### "Where does the monster spawn, and how does it find me?"
 

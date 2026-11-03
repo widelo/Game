@@ -44,6 +44,12 @@ namespace Game.Editor
             if (string.IsNullOrWhiteSpace(output)) output = defaultOutput;
 
             BuildTargetGroup group = target == BuildTarget.WebGL ? BuildTargetGroup.WebGL : BuildTargetGroup.Standalone;
+            if (target == BuildTarget.StandaloneOSX)
+            {
+                // Universal (Intel + Apple Silicon). String API so this compiles even without the Mac module.
+                EditorUserBuildSettings.SetPlatformSettings("OSXUniversal", "Architecture", "x64ARM64");
+                UnityEngine.Debug.Log("[BuildPlayer] macOS architecture -> x64ARM64 (universal)");
+            }
             if (!BuildPipeline.IsBuildTargetSupported(group, target))
             {
                 UnityEngine.Debug.LogError($"[BuildPlayer] result=Failed errors=1 size=0 (build module for {target} is not " +
@@ -159,7 +165,7 @@ namespace Game.Editor
                     {
                         string rel = file.Substring(root.Length + 1);
                         if (rel.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                               .Any(part => part.EndsWith("_DoNotShip", StringComparison.OrdinalIgnoreCase)))
+                               .Any(part => part.EndsWith("_DoNotShip", StringComparison.OrdinalIgnoreCase) || part.EndsWith("_BackUpThisFolder_ButDontShipItWithYourGame", StringComparison.OrdinalIgnoreCase)))
                             continue;
                         var entry = archive.CreateEntry((top + "/" + rel).Replace('\\', '/'), System.IO.Compression.CompressionLevel.Optimal);
                         using (var es = entry.Open())
@@ -234,8 +240,10 @@ CONTROLS
 
 PLATFORM NOTES
   Windows: unzip, run CS462Game.exe. If SmartScreen warns, choose ""More info"" > ""Run anyway"" (unsigned build).
-  macOS:   unzip, right-click CS462Game.app > Open the first time (unsigned, not notarized), or run
-           xattr -dr com.apple.quarantine CS462Game.app
+  macOS:   extract the .tar.gz (double-click), then right-click CS462Game.app > Open the first time
+           (unsigned, not notarized). If macOS says the app is damaged, run in Terminal from the folder:
+           xattr -dr com.apple.quarantine CS462Game.app && chmod +x CS462Game.app/Contents/MacOS/*
+           Universal binary: runs natively on Intel and Apple Silicon.
   WebGL:   must be served over http, not opened from the file system. In the unzipped folder run
            python3 -m http.server 8000   then open http://localhost:8000 in Chrome/Edge/Firefox.
 

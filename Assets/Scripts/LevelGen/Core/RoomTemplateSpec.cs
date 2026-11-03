@@ -31,6 +31,28 @@ namespace LevelGen.Core
             }
         }
         public static bool Allows(this DoorSides sides, Cardinal c) => (sides & c.ToFlag()) != 0;
+
+        /// <summary>Rotate a door mask clockwise (viewed from above) by a multiple of 90 degrees: North becomes East at 90.</summary>
+        public static DoorSides Rotate(this DoorSides sides, int degrees)
+        {
+            int steps = ((degrees / 90) % 4 + 4) % 4;
+            for (int i = 0; i < steps; i++)
+            {
+                DoorSides r = DoorSides.None;
+                if ((sides & DoorSides.North) != 0) r |= DoorSides.East;
+                if ((sides & DoorSides.East) != 0)  r |= DoorSides.South;
+                if ((sides & DoorSides.South) != 0) r |= DoorSides.West;
+                if ((sides & DoorSides.West) != 0)  r |= DoorSides.North;
+                sides = r;
+            }
+            return sides;
+        }
+
+        public static Cardinal Rotate(this Cardinal c, int degrees)
+        {
+            int steps = ((degrees / 90) % 4 + 4) % 4;
+            return (Cardinal)(((int)c + steps) % 4); // enum order North, East, South, West is clockwise
+        }
     }
 
     /// <summary>Which roles a template may be used for.</summary>
@@ -40,7 +62,8 @@ namespace LevelGen.Core
         SpawnOnly,
         KeyOnly,
         NormalOnly,
-        NeverSpawn
+        NeverSpawn,
+        ExitOnly   // v4: only the end-of-level room
     }
 
     public sealed class RoomTemplateSpec
@@ -63,8 +86,15 @@ namespace LevelGen.Core
         /// <summary>False = keep the shape the generator rolled (rectangle or ellipse); true = force <see cref="Shape"/>.</summary>
         public bool OverrideShape = false;
 
-        /// <summary>Which sides of this room may receive a corridor. A hand-built prefab with one doorway sets exactly one flag.</summary>
+        /// <summary>
+        /// Which sides of this room may receive a corridor, in the template's OWN frame (as the prefab is authored).
+        /// A hand-built prefab with one doorway sets exactly one flag; the generator may rotate the whole template
+        /// (Room.TemplateRotationDeg) so that side faces whatever corridor the lattice provides.
+        /// </summary>
         public DoorSides AllowedDoors = DoorSides.All;
+
+        /// <summary>False pins the template to its authored orientation (e.g. a room whose geometry must face a fixed way).</summary>
+        public bool AllowRotation = true;
 
         /// <summary>Door-count bounds. The generator only places this template on a lattice cell whose corridors fit.</summary>
         public int MinDoors = 1;

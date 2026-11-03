@@ -25,6 +25,7 @@ MonoBehaviour:
   doorWest: 1
   minDoors: 1
   maxDoors: 4
+  allowRotation: 1
   useForcedType: 0
   forcedType: 0
   generateFloor: 1

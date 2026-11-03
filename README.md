@@ -38,8 +38,14 @@ serialized values in the scene file win.
 | `F1` | toggle the HUD |
 | `Tab` | overhead map view — `WASD` pans, scroll zooms, `Home` refits |
 
-The HUD shows the seed, room/corridor/prop/light counts, the spawn and key rooms, and — for the room you are
-standing in — its archetype, its **template name** and its **door count**.
+**Goal:** find the 3 glowing keys (walk into them), then go to the exit — a red panel with a padlock across
+the exit corridor. With all keys it turns green and opens; step into the exit room to escape. The next floor
+(seed + 1) builds 1.5 s later.
+
+The objective HUD (top centre) shows `FLOOR n  KEYS x/3` and the goal (`FIND THE EXIT` / `EXIT UNLOCKED - GO`),
+and flashes `ESCAPED - FLOOR n` when you get out. The debug HUD (top left, `F1`) shows the seed, counts, the
+spawn, key and **exit** rooms, and — for the room you are standing in — its archetype, its **template name**
+and its **door count**.
 
 ## The CS462 menu
 
@@ -49,6 +55,7 @@ standing in — its archetype, its **template name** and its **door count**.
 | `CS462/Rebuild Level In Scene` | Rebuilds the level in the open scene in edit mode (no Play needed). |
 | `CS462/Create Default Level Gen Assets` | Creates/repairs `Assets/LevelGen/DefaultLevelGenProfile.asset` and the sample room templates. |
 | `CS462/Apply URP Settings` | Sets the URP asset's additional-light shadows / per-pixel mode / light count. |
+| `CS462/Export Current Level To Prefab` | Freezes the built level into `Assets/LevelGen/Exported/Level_seed<N>/` (prefab + saved meshes + a .txt listing every room and corridor with its dimensions). Open the prefab to inspect or measure a layout without pressing Play. |
 | `CS462/Headless Verify (20 seeds)` | Builds 20 seeds and checks layout, content, NavMesh reachability and template usage. |
 
 The `LevelBuilder` inspector also has **Build (seed)**, **Build random**, **Verify 20 seeds**, and — when the
@@ -77,12 +84,14 @@ PROJ='C:\Users\schmi\projs\Game'
 "$UNITY" -batchmode -nographics -quit -projectPath "$PROJ" \
          -executeMethod Game.Editor.SceneBootstrap.CreateMainScene -logFile "$PROJ\Logs\scene.log"
 
-# 4. the real smoke test: 20 seeds, built, validated, NavMesh-path-checked
+# 4. the real smoke test: 20 seeds, built, validated, NavMesh-path-checked; also exit room / keys / gate
+#    placement, prefab room rotation + open doorways, SpawnRoom and EndRoom placed on >= 15 of 20 seeds
 "$UNITY" -batchmode -nographics -quit -projectPath "$PROJ" \
          -executeMethod Game.Editor.HeadlessVerify.BuildLevels -logFile "$PROJ\Logs\verify.log"
 
 # 5. play-mode tests: scene loads, player lands on the NavMesh, every room reachable, 50 rebuilds without
-#    leaking meshes or materials, overhead view toggles, same seed gives identical geometry
+#    leaking meshes or materials, overhead view toggles, same seed gives identical geometry, and the core
+#    loop (collect 3 keys -> gate opens -> escape -> seed + 1 built, player at the new spawn)
 "$UNITY" -batchmode -projectPath "$PROJ" -runTests -testPlatform PlayMode \
          -testResults "$PROJ\Logs\playmode.xml" -logFile "$PROJ\Logs\playmode.log"
 

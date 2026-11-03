@@ -705,8 +705,9 @@ namespace LevelGen.Core.Tests
                     uses++;
                     if (r.Role == RoomRole.Spawn) spawnUses++;
                     Assert.AreEqual(1, r.DoorCount, "seed " + seed + " room " + r.Id + " door count");
-                    Assert.AreEqual(DoorSides.North, LevelGenerator.AttachedDoorSides(layout, r),
-                        "seed " + seed + " room " + r.Id + " corridor is not on the North side");
+                    // v4: the template may be rotated; its authored North doorway then faces North.Rotate(rot).
+                    Assert.AreEqual(DoorSides.North.Rotate(r.TemplateRotationDeg), LevelGenerator.AttachedDoorSides(layout, r),
+                        "seed " + seed + " room " + r.Id + " corridor is not on the (rotated) North side");
                 }
             }
             Assert.Greater(spawnUses, 0, "OneDoorNorth was never placed as the spawn over seeds 0..499");
@@ -912,6 +913,214 @@ namespace LevelGen.Core.Tests
                     foreach (var l in r.Lights) if (l.Type == LightType.CeilingLamp) ceiling++;
                     Assert.LessOrEqual(ceiling, RoomFurnisher.MaxCeilingLampsPerRoom, "seed " + seed + " room " + r.Id);
                 }
+            }
+        }
+
+        // =====================================================================================
+        // v4: template rotation + exit room
+        // =====================================================================================
+
+        private static int CountWestDoor(bool allowRotation, out int seedsPlaced)
+        {
+            int placements = 0;
+            seedsPlaced = 0;
+            for (int seed = 0; seed < 500; seed++)
+            {
+                var t = RoomTemplateSpec.Prefab("WestDoor", 10, 10, DoorSides.West, 1, RoleAffinity.Any);
+                t.AllowRotation = allowRotation;
+                var layout = LevelGenerator.Generate(seed, WithTemplates(RoomTemplateSpec.Procedural(), t));
+                var errors = LevelValidator.Validate(layout);
+                Assert.IsEmpty(errors, "seed " + seed + " invalid:\n  " + Join(errors));
+                bool placed = false;
+                foreach (var r in layout.Rooms)
+                {
+                    if (r.TemplateName != "WestDoor") continue;
+                    placed = true;
+                    placements++;
+                    if (!allowRotation) Assert.AreEqual(0, r.TemplateRotationDeg, "seed " + seed + " room " + r.Id);
+                    Assert.AreEqual(1, r.DoorCount, "seed " + seed + " room " + r.Id);
+                    var attached = LevelGenerator.AttachedDoorSides(layout, r);
+                    Assert.AreEqual(Cardinal.West.Rotate(r.TemplateRotationDeg).ToFlag(), attached,
+                        "seed " + seed + " room " + r.Id + " rot " + r.TemplateRotationDeg);
+                    Assert.AreEqual(DoorSides.West.Rotate(r.TemplateRotationDeg), attached);
+                }
+                if (placed) seedsPlaced++;
+            }
+            return placements;
+        }
+
+        [Test]
+        public void Rotation_OneDoorPrefab_IsPlacedOften_AndItsDoorFacesTheCorridor_OverSeeds0To499()
+        {
+            int seedsRot, seedsFixed;
+            int withRot = CountWestDoor(true, out seedsRot);
+            int without = CountWestDoor(false, out seedsFixed);
+            Console.WriteLine("WestDoor placed: rotation " + seedsRot + "/500 seeds (" + withRot + " rooms), fixed " + seedsFixed + "/500 seeds (" + without + " rooms)");
+            Assert.GreaterOrEqual(seedsRot, 200, "WestDoor placed in only " + seedsRot + "/500 seeds with rotation");
+            Assert.Less(seedsFixed, seedsRot, "rotation did not increase placement");
+        }
+
+        [Test]
+        public void Rotation_SettingsOff_NeverRotates_AndQuarterTurnSwapsFootprint_OverSeeds0To199()
+        {
+            bool sawQuarter = false;
+            for (int seed = 0; seed < 200; seed++)
+            {
+                var off = WithTemplates(RoomTemplateSpec.Procedural(), RoomTemplateSpec.Prefab("Long", 14, 8, DoorSides.West, 1));
+                off.AllowTemplateRotation = false;
+                var a = LevelGenerator.Generate(seed, off);
+                Assert.IsEmpty(LevelValidator.Validate(a), "seed " + seed);
+                foreach (var r in a.Rooms) Assert.AreEqual(0, r.TemplateRotationDeg, "seed " + seed);
+
+                var b = LevelGenerator.Generate(seed, WithTemplates(RoomTemplateSpec.Procedural(), RoomTemplateSpec.Prefab("Long", 14, 8, DoorSides.West, 1)));
+                Assert.IsEmpty(LevelValidator.Validate(b), "seed " + seed + ":\n  " + Join(LevelValidator.Validate(b)));
+                foreach (var r in b.Rooms)
+                {
+                    if (r.TemplateName != "Long") continue;
+                    bool quarter = r.TemplateRotationDeg % 180 == 90;
+                    if (quarter) sawQuarter = true;
+                    Assert.AreEqual(quarter ? 8.0 : 14.0, r.SizeX, 1e-12);
+                    Assert.AreEqual(quarter ? 14.0 : 8.0, r.SizeZ, 1e-12);
+                }
+            }
+            Assert.IsTrue(sawQuarter, "never saw a 90/270 placement");
+        }
+
+        [Test]
+        public void Rotation_DoorSidesRotate_IsClockwise()
+        {
+            Assert.AreEqual(DoorSides.East, DoorSides.North.Rotate(90));
+            Assert.AreEqual(DoorSides.North, DoorSides.West.Rotate(90));
+            Assert.AreEqual(DoorSides.South, DoorSides.North.Rotate(180));
+            Assert.AreEqual(DoorSides.West, DoorSides.North.Rotate(270));
+            Assert.AreEqual(DoorSides.All, DoorSides.All.Rotate(90));
+            Assert.AreEqual(Cardinal.South, Cardinal.West.Rotate(270));
+            var room = new Room { Role = RoomRole.Normal };
+            room.CorridorIds.Add(0);
+            int rot;
+            Assert.IsTrue(LevelGenerator.TemplateFits(RoomTemplateSpec.Prefab("W", 10, 10, DoorSides.West, 1), room, DoorSides.South, out rot));
+            Assert.AreEqual(270, rot);
+            Assert.IsFalse(LevelGenerator.TemplateFits(RoomTemplateSpec.Prefab("W", 10, 10, DoorSides.West, 1), room, DoorSides.South));
+        }
+
+        [Test]
+        public void Validator_DetectsBadRotation()
+        {
+            var t = RoomTemplateSpec.Prefab("WestDoor", 10, 10, DoorSides.West, 1);
+            for (int seed = 0; seed < 200; seed++)
+            {
+                var layout = LevelGenerator.Generate(seed, WithTemplates(t));
+                Room hit = null;
+                foreach (var r in layout.Rooms) if (r.TemplateName == "WestDoor") { hit = r; break; }
+                if (hit == null) continue;
+                hit.TemplateRotationDeg = (hit.TemplateRotationDeg + 90) % 360;
+                Assert.IsNotEmpty(LevelValidator.Validate(layout), "wrong rotation not detected");
+                hit.TemplateRotationDeg = 45;
+                Assert.IsNotEmpty(LevelValidator.Validate(layout), "45 degrees not detected");
+                return;
+            }
+            Assert.Fail("WestDoor never placed");
+        }
+
+        [Test]
+        public void Exit_OneLeafFarFromSpawn_NeverAKey_ForSeeds0To999()
+        {
+            var dists = new int[16];
+            for (int seed = 0; seed < 1000; seed++)
+            {
+                var layout = LevelGenerator.Generate(seed);
+                int exits = 0;
+                foreach (var r in layout.RoomsWithRole(RoomRole.Exit)) exits++;
+                Assert.AreEqual(1, exits, "seed " + seed);
+                var exit = layout.ExitRoom;
+                Assert.AreNotEqual(0, exit.Id, "seed " + seed);
+                Assert.AreEqual(1, exit.DoorCount, "seed " + seed + " exit doors");
+                Assert.AreEqual(RoomType.Lobby, exit.Type, "seed " + seed);
+                int d = layout.BfsDistances(0)[exit.Id];
+                dists[d]++;
+                if (layout.Rooms.Count >= 5) Assert.GreaterOrEqual(d, 2, "seed " + seed + " exit distance");
+                foreach (var k in layout.KeyRooms) Assert.AreNotEqual(exit.Id, k.Id);
+                int keys = 0;
+                foreach (var k in layout.KeyRooms) keys++;
+                Assert.AreEqual(3, keys, "seed " + seed);
+            }
+            var sb = new System.Text.StringBuilder("exit BFS distance histogram:");
+            for (int i = 0; i < dists.Length; i++) if (dists[i] > 0) sb.Append(" d" + i + "=" + dists[i]);
+            Console.WriteLine(sb.ToString());
+        }
+
+        [Test]
+        public void Exit_Disabled_YieldsNone_AndTwoRoomLevelClampsKeys()
+        {
+            for (int seed = 0; seed < 100; seed++)
+            {
+                var layout = LevelGenerator.Generate(seed, new LevelGenSettings { ExitRoom = false });
+                Assert.IsNull(layout.ExitRoom, "seed " + seed);
+                Assert.IsEmpty(LevelValidator.Validate(layout), "seed " + seed);
+
+                var two = LevelGenerator.Generate(seed, new LevelGenSettings { MinRooms = 2, MaxRooms = 2 });
+                Assert.IsNotNull(two.ExitRoom, "seed " + seed);
+                int keys = 0;
+                foreach (var k in two.KeyRooms) keys++;
+                Assert.AreEqual(0, keys);
+                Assert.IsEmpty(LevelValidator.Validate(two), "seed " + seed + ":\n  " + Join(LevelValidator.Validate(two)));
+            }
+        }
+
+        [Test]
+        public void Exit_ExitOnlyTemplate_LandsOnTheExitOnly_OverSeeds0To199()
+        {
+            int uses = 0;
+            for (int seed = 0; seed < 200; seed++)
+            {
+                var settings = WithTemplates(RoomTemplateSpec.Procedural(),
+                    RoomTemplateSpec.Prefab("EndRoom", 10, 10, DoorSides.West, 1, RoleAffinity.ExitOnly));
+                var layout = LevelGenerator.Generate(seed, settings);
+                Assert.IsEmpty(LevelValidator.Validate(layout), "seed " + seed + ":\n  " + Join(LevelValidator.Validate(layout)));
+                foreach (var r in layout.Rooms)
+                    if (r.TemplateName == "EndRoom") { uses++; Assert.AreEqual(RoomRole.Exit, r.Role, "seed " + seed); }
+                Assert.AreEqual("EndRoom", layout.ExitRoom.TemplateName, "seed " + seed + ": ExitOnly first pass missed the exit");
+            }
+            Assert.AreEqual(200, uses);
+            Assert.IsTrue(LevelGenerator.AffinityAllows(RoleAffinity.ExitOnly, RoomRole.Exit));
+            Assert.IsFalse(LevelGenerator.AffinityAllows(RoleAffinity.ExitOnly, RoomRole.Normal));
+            Assert.IsTrue(LevelGenerator.AffinityAllows(RoleAffinity.NeverSpawn, RoomRole.Exit));
+            Assert.IsFalse(LevelGenerator.AffinityAllows(RoleAffinity.SpawnOnly, RoomRole.Exit));
+            Assert.IsFalse(LevelGenerator.AffinityAllows(RoleAffinity.KeyOnly, RoomRole.Exit));
+            Assert.IsFalse(LevelGenerator.AffinityAllows(RoleAffinity.NormalOnly, RoomRole.Exit));
+        }
+
+        [Test]
+        public void Exit_IsNeverDark_AndDebugStringShowsExitAndRotation_ForSeeds0To499()
+        {
+            for (int seed = 0; seed < 500; seed++)
+            {
+                var layout = LevelGenerator.Generate(seed, new LevelGenSettings { DarkRoomChance = 1.0 });
+                bool anyOn = false;
+                foreach (var l in layout.ExitRoom.Lights) if (l.Enabled) anyOn = true;
+                Assert.IsTrue(anyOn, "seed " + seed + " exit is dark");
+            }
+            var t = RoomTemplateSpec.Prefab("WestDoor", 10, 10, DoorSides.West, 1);
+            for (int seed = 0; seed < 100; seed++)
+            {
+                var layout = LevelGenerator.Generate(seed, WithTemplates(t));
+                string dump = layout.ToDebugString();
+                StringAssert.Contains(" Exit ", dump);
+                foreach (var r in layout.Rooms)
+                    if (r.TemplateRotationDeg != 0) { StringAssert.Contains("rot=" + r.TemplateRotationDeg + " ", dump); return; }
+            }
+            Assert.Fail("no rotated placement over seeds 0..99");
+        }
+
+        [Test]
+        public void Exit_AndRotation_AreDeterministic_ForSeeds0To49()
+        {
+            for (int seed = 0; seed < 50; seed++)
+            {
+                var t1 = RoomTemplateSpec.Prefab("WestDoor", 10, 10, DoorSides.West, 1);
+                var t2 = RoomTemplateSpec.Prefab("WestDoor", 10, 10, DoorSides.West, 1);
+                Assert.AreEqual(LevelGenerator.Generate(seed, WithTemplates(RoomTemplateSpec.Procedural(), t1)).ToDebugString(),
+                                LevelGenerator.Generate(seed, WithTemplates(RoomTemplateSpec.Procedural(), t2)).ToDebugString(), "seed " + seed);
             }
         }
 

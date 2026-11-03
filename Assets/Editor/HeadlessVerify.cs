@@ -40,6 +40,18 @@ namespace Game.Editor
     ///    the NavMesh, and a complete NavMesh path from each enemy to the player spawn. The enemy types are
     ///    resolved by NAME so this file compiles without the Game.Enemy assembly.
     ///
+    /// v6 additions (core loop: keys, locked exit, prefab rotation):
+    ///  - exactly one Exit room (when the profile asks for one) with ONE door and BfsDistance from spawn
+    ///    >= ExitMinDistance when the level has >= 5 rooms; key count == the clamped request, keys never in the
+    ///    exit or spawn room;
+    ///  - Game.Objectives.ObjectiveTracker.Spawn(layout) is invoked (edit mode has no OnLevelBuilt subscribers):
+    ///    an ExitGate within 2 m of builder.ExitDoorwayPoint, a KeyPickup within 1.5 m of every key room centre,
+    ///    every key and the gate reachable on the NavMesh from spawn. Types resolved by NAME;
+    ///  - every prefab-template room: the prefab instance's yaw == Room.TemplateRotationDeg; for SpawnRoom and
+    ///    EndRoom, a 1.2 m sphere 1 m inside the doorway (y 1.2) overlaps NO prefab collider (floor/ceiling
+    ///    slabs excluded) - proof that rotation turned the authored opening onto the corridor;
+    ///  - EndRoom and SpawnRoom templates must each be placed on >= 75% of the seeds (15 of 20).
+    ///
     /// Run: Unity.exe -batchmode -nographics -quit -projectPath ... -executeMethod Game.Editor.HeadlessVerify.BuildLevels
     ///      Unity.exe -batchmode -nographics -quit -projectPath ... -executeMethod Game.Editor.HeadlessVerify.BuildLevelsStress
     /// Exits with code 1 on any failure. Inspector callers use Run(false) so the editor survives.
@@ -58,6 +70,18 @@ namespace Game.Editor
         const string PrefabTemplateName = "TeammateRoom";
 
         const string TeammateTemplateAssetPath = "Assets/LevelGen/Templates/TeammateRoom.asset";
+
+        const string SpawnTemplateName = SceneBootstrap.SpawnTemplateName;
+        const string EndTemplateName = SceneBootstrap.EndTemplateName;
+
+        /// <summary>Fraction of seeds on which SpawnRoom / EndRoom must be placed (15 of 20).</summary>
+        const float RequiredSpecialRoomShare = 0.75f;
+
+        const float DoorwayProbeInset = 1.0f;
+        const float DoorwayProbeHeight = 1.2f;
+        const float DoorwayProbeRadius = 1.2f;
+        const float GateMaxDistance = 2.0f;
+        const float KeyMaxDistance = 1.5f;
 
         [MenuItem("CS462/Headless Verify (20 seeds)")]
         public static void BuildLevels() { Run(true); }
@@ -84,6 +108,8 @@ namespace Game.Editor
             public int AuthoringWarnings;
             public string TemplateUsage;
             public Dictionary<string, int> TemplateCounts;
+            public bool SpawnTemplatePlaced, EndTemplatePlaced;
+            public int RotatedPrefabRooms;
         }
 
         // ------------------------------------------------------------------ the 20-seed smoke run
@@ -101,10 +127,13 @@ namespace Game.Editor
             // never hardcodes "Floor" - renaming the prefab must not quietly disable the check.
             string prefabName = ReadTemplatePrefabName(TeammateTemplateAssetPath);
             PropMap propMap = PropMap.Read(builder);
+            s_templatePrefabs = ReadTemplatePrefabs(builder);
 
             var failures = new List<string>();
             int prefabRoomCount = 0;   // rooms built from PrefabTemplateName, summed over every seed
             int bedInstances = 0, fittedProps = 0;
+            int spawnSeeds = 0, endSeeds = 0, rotatedPrefabRooms = 0;
+            var templateTotals = new Dictionary<string, int>();
 
             for (int i = 0; i < seedCount; i++)
             {
@@ -113,6 +142,10 @@ namespace Game.Editor
                 prefabRoomCount += s.PrefabRooms;
                 bedInstances += s.BedInstances;
                 fittedProps += s.FittedProps;
+                if (s.SpawnTemplatePlaced) spawnSeeds++;
+                if (s.EndTemplatePlaced) endSeeds++;
+                rotatedPrefabRooms += s.RotatedPrefabRooms;
+                AddTotals(templateTotals, s.TemplateCounts);
                 if (!s.LayoutOk) continue;
 
                 UnityEngine.Debug.Log($"[HeadlessVerify] seed={seed} rooms={s.Rooms} corridors={s.Corridors} " +
@@ -120,7 +153,7 @@ namespace Game.Editor
                           $"props={s.Props}/{s.LayoutProps} lights={s.Lights}/{s.LayoutLights} " +
                           $"navVerts={s.NavVerts} navMaxY={s.NavMaxY:F2} renderers={s.Renderers} " +
                           $"buildMs={s.BuildMs} " +
-                          $"spawnDoors={SpawnDoors(builder)} " +
+                          $"spawnDoors={SpawnDoors(builder)} exit={ExitSummary(builder)} " +
                           $"beds={s.BedInstances} fittedProps={s.FittedProps} enemies={s.Enemies} " +
                           $"templates={{{s.TemplateUsage}}}");
             }
@@ -133,6 +166,7 @@ namespace Game.Editor
                 failures.Add($"template \"{PrefabTemplateName}\" was never placed in {seedCount} seeds " +
                              "(is it in the profile's templates list, and does its footprint fit a lattice cell?)");
             CheckBedSweep(propMap, bedInstances, fittedProps, seedCount, failures);
+            CheckSpecialRoomSweep(seedCount, spawnSeeds, endSeeds, rotatedPrefabRooms, templateTotals, failures);
 
             if (failures.Count > 0)
             {
@@ -164,9 +198,11 @@ namespace Game.Editor
 
             string prefabName = ReadTemplatePrefabName(TeammateTemplateAssetPath);
             PropMap propMap = PropMap.Read(builder);
+            s_templatePrefabs = ReadTemplatePrefabs(builder);
 
             var failures = new List<string>();
             int bedInstances = 0, fittedProps = 0;
+            int spawnSeeds = 0, endSeeds = 0, rotatedPrefabRooms = 0;
             var templateTotals = new Dictionary<string, int>();
 
             long totalBuildMs = 0, maxBuildMs = 0;
@@ -188,6 +224,9 @@ namespace Game.Editor
                 fittedProps += s.FittedProps;
                 authoringWarnings += s.AuthoringWarnings;
                 widenedRooms += s.WidenedRooms;
+                if (s.SpawnTemplatePlaced) spawnSeeds++;
+                if (s.EndTemplatePlaced) endSeeds++;
+                rotatedPrefabRooms += s.RotatedPrefabRooms;
                 totalBuildMs += s.BuildMs;
                 chunkBuildMs += s.BuildMs;
                 chunkSeeds++;
@@ -233,6 +272,7 @@ namespace Game.Editor
             if (prefabRoomCount < 1)
                 failures.Add($"template \"{PrefabTemplateName}\" was never placed in {seedCount} seeds");
             CheckBedSweep(propMap, bedInstances, fittedProps, seedCount, failures);
+            CheckSpecialRoomSweep(seedCount, spawnSeeds, endSeeds, rotatedPrefabRooms, templateTotals, failures);
 
             if (failures.Count > 0)
             {
@@ -312,6 +352,14 @@ namespace Game.Editor
             // ---- v3: the spawn room is a single-entrance dead end ----
             CheckSpawnDoors(seed, layout, failures);
 
+            // ---- v6: exit room + key roles ----
+            CheckExitAndKeyRoles(seed, layout, failures);
+            stats.SpawnTemplatePlaced = layout.Rooms.Any(r => r.TemplateName == SpawnTemplateName);
+            stats.EndTemplatePlaced = layout.Rooms.Any(r => r.TemplateName == EndTemplateName);
+
+            // ---- v6: prefab rooms are rotated as the layout says, and the spawn/end doorway is open ----
+            stats.RotatedPrefabRooms = CheckPrefabRotations(seed, builder, layout, failures);
+
             // ---- v2 scene content ----
             var renderers = builder.transform.GetComponentsInChildren<MeshRenderer>(true);
             stats.Renderers = renderers.Length;
@@ -361,6 +409,9 @@ namespace Game.Editor
 
             // ---- v5: placeholder enemy ----
             stats.Enemies = CheckEnemies(seed, layout, spawnHit.position, failures);
+
+            // ---- v6: keys + exit gate exist where the layout says, and are reachable ----
+            CheckObjectives(seed, builder, layout, spawnHit.position, failures);
 
             var widened = new List<int>();
             var authoredRooms = new List<string>();
@@ -510,6 +561,9 @@ namespace Game.Editor
                 }
             }
 
+            // v6: a template whose prefab brings its own floor sets GenerateFloor off; then the prefab must
+            // carry colliders instead (the NavMesh bakes on them), which the reachability checks cover.
+            if (room.Template != null && !room.Template.GenerateFloor) return;
             bool hasFloor = holder.GetComponentsInChildren<MeshFilter>(true).Any(mf =>
                 mf.sharedMesh != null &&
                 (mf.sharedMesh.name.StartsWith("RoomFloor") || IsGeneratedFloorObject(mf.gameObject.name, room.Id)));
@@ -564,6 +618,251 @@ namespace Game.Editor
                 return null;
             }
             return go.name;
+        }
+
+        // ------------------------------------------------------------------ v6 checks (core loop)
+
+        /// <summary>Template name -> prefab GameObject name, for every template in the profile that has a prefab.</summary>
+        static Dictionary<string, string> s_templatePrefabs = new Dictionary<string, string>();
+
+        static Dictionary<string, string> ReadTemplatePrefabs(LevelBuilder builder)
+        {
+            var map = new Dictionary<string, string>();
+            Object profile = new SerializedObject(builder).FindProperty("profile")?.objectReferenceValue;
+            if (profile == null) profile = AssetDatabase.LoadAssetAtPath<ScriptableObject>(SceneBootstrap.ProfileAssetPath);
+            if (profile == null) return map;
+            var list = new SerializedObject(profile).FindProperty("templates");
+            if (list == null || !list.isArray) return map;
+            for (int i = 0; i < list.arraySize; i++)
+            {
+                var t = list.GetArrayElementAtIndex(i).objectReferenceValue;
+                if (t == null) continue;
+                var so = new SerializedObject(t);
+                var prefab = so.FindProperty("prefab")?.objectReferenceValue;
+                if (prefab == null) continue;
+                string name = so.FindProperty("templateName")?.stringValue;
+                if (string.IsNullOrEmpty(name)) name = t.name;
+                map[name] = prefab.name;
+            }
+            UnityEngine.Debug.Log("[HeadlessVerify] prefab templates: " +
+                                  (map.Count == 0 ? "(none)" : string.Join(", ", map.Select(kv => $"{kv.Key}->{kv.Value}"))));
+            return map;
+        }
+
+        static void AddTotals(Dictionary<string, int> totals, Dictionary<string, int> counts)
+        {
+            if (counts == null) return;
+            foreach (var kv in counts)
+            {
+                totals.TryGetValue(kv.Key, out int n);
+                totals[kv.Key] = n + kv.Value;
+            }
+        }
+
+        static string ExitSummary(LevelBuilder builder)
+        {
+            var layout = builder.CurrentLayout;
+            Room exit = layout != null ? layout.ExitRoom : null;
+            if (exit == null) return "-";
+            Room spawn = layout.SpawnRoom;
+            int d = spawn != null ? layout.BfsDistances(spawn.Id)[exit.Id] : -1;
+            return $"{exit.Id}(doors={exit.DoorCount},hops={d},{exit.TemplateName},rot={exit.TemplateRotationDeg})";
+        }
+
+        /// <summary>
+        /// Role rules: one Exit room (when the settings ask for one), a single door, far enough from spawn; key
+        /// count equals the clamped request; no key role on the spawn or exit room.
+        /// </summary>
+        static void CheckExitAndKeyRoles(int seed, LevelLayout layout, List<string> failures)
+        {
+            var settings = layout.Settings;
+            bool wantExit = settings == null || settings.ExitRoom;
+            var exits = layout.Rooms.Where(r => r.Role == RoomRole.Exit).ToList();
+            Room spawn = layout.SpawnRoom;
+
+            if (wantExit && exits.Count != 1)
+                failures.Add($"seed {seed}: {exits.Count} Exit rooms, expected exactly 1");
+            if (!wantExit && exits.Count != 0)
+                failures.Add($"seed {seed}: {exits.Count} Exit rooms although LevelGenSettings.ExitRoom is off");
+
+            if (exits.Count == 1 && spawn != null)
+            {
+                Room exit = exits[0];
+                if (exit.DoorCount != 1)
+                    failures.Add($"seed {seed}: exit room {exit.Id} DoorCount={exit.DoorCount}, expected 1");
+                int minDist = settings != null ? settings.ExitMinDistance : 2;
+                int dist = layout.BfsDistances(spawn.Id)[exit.Id];
+                if (layout.Rooms.Count >= 5 && dist < minDist)
+                    failures.Add($"seed {seed}: exit room {exit.Id} is {dist} corridors from spawn, expected >= {minDist} " +
+                                 $"({layout.Rooms.Count} rooms)");
+            }
+
+            int requested = settings != null ? settings.KeyRooms : 3;
+            int eligible = Mathf.Max(0, layout.Rooms.Count - 1 - exits.Count);
+            int want = Mathf.Clamp(requested, 0, eligible);
+            var keys = layout.KeyRooms.ToList();
+            if (keys.Count != want)
+                failures.Add($"seed {seed}: {keys.Count} key rooms, expected {want} (requested {requested}, " +
+                             $"{eligible} eligible rooms)");
+            foreach (var k in keys)
+            {
+                if (spawn != null && k.Id == spawn.Id) failures.Add($"seed {seed}: key in the spawn room {k.Id}");
+                if (exits.Any(e => e.Id == k.Id)) failures.Add($"seed {seed}: key in the exit room {k.Id}");
+            }
+        }
+
+        /// <summary>
+        /// For every room built from a prefab template: the prefab instance's yaw must equal the layout's
+        /// TemplateRotationDeg. For SpawnRoom / EndRoom additionally: nothing solid from the prefab within
+        /// <see cref="DoorwayProbeRadius"/> of a point 1 m inside the doorway at 1.2 m height. Floor and ceiling
+        /// slabs (bounds entirely below 0.3 m or above 2.5 m) are excluded - only walls can block a doorway.
+        /// Returns the number of prefab rooms with a non-zero rotation.
+        /// </summary>
+        static int CheckPrefabRotations(int seed, LevelBuilder builder, LevelLayout layout, List<string> failures)
+        {
+            int rotated = 0;
+            Physics.SyncTransforms();
+            foreach (var room in layout.Rooms)
+            {
+                if (string.IsNullOrEmpty(room.TemplateName) ||
+                    !s_templatePrefabs.TryGetValue(room.TemplateName, out string prefabName)) continue;
+
+                var holder = FindRoomObject(builder, room.Id);
+                if (holder == null) { failures.Add($"seed {seed}: prefab room {room.Id} ({room.TemplateName}) has no room object"); continue; }
+                var instance = holder.GetComponentsInChildren<Transform>(true)
+                    .FirstOrDefault(t => t != holder && t.parent == holder && t.name.StartsWith(prefabName) &&
+                                         !IsGeneratedFloorObject(t.name, room.Id));
+                if (instance == null)
+                {
+                    failures.Add($"seed {seed}: room {room.Id} ({room.TemplateName}) has no \"{prefabName}\" prefab instance");
+                    continue;
+                }
+
+                int want = ((room.TemplateRotationDeg % 360) + 360) % 360;
+                if (want != 0) rotated++;
+                float delta = Mathf.Abs(Mathf.DeltaAngle(instance.eulerAngles.y, want));
+                if (delta > 0.5f)
+                    failures.Add($"seed {seed}: room {room.Id} ({room.TemplateName}) prefab yaw {instance.eulerAngles.y:F1} " +
+                                 $"!= TemplateRotationDeg {want}");
+
+                if (room.TemplateName != SpawnTemplateName && room.TemplateName != EndTemplateName) continue;
+                if (room.CorridorIds.Count == 0) { failures.Add($"seed {seed}: {room.TemplateName} room {room.Id} has no corridor"); continue; }
+
+                int corridorId = room.CorridorIds[0];
+                Vector3 door = builder.RoomDoorwayWorld(room.Id, corridorId);
+                Vector3 outward = SideVector(builder.RoomDoorSide(room.Id, corridorId));
+                Vector3 probe = door - outward * DoorwayProbeInset + Vector3.up * DoorwayProbeHeight;
+
+                var blockers = Physics.OverlapSphere(probe, DoorwayProbeRadius, ~0, QueryTriggerInteraction.Ignore)
+                    .Where(c => c.transform.IsChildOf(instance))
+                    .Where(c => c.bounds.max.y > 0.3f && c.bounds.min.y < 2.5f)
+                    // Only wall-sized geometry blocks a doorway. Small props an author hangs on the door
+                    // (a padlock, a sign, a handle) are not a mis-rotated room.
+                    .Where(c => Mathf.Max(c.bounds.size.x, c.bounds.size.y, c.bounds.size.z) >= 1.0f)
+                    .Select(c => c.name).ToList();
+                if (blockers.Count > 0)
+                    failures.Add($"seed {seed}: {room.TemplateName} room {room.Id} (rot {want}, door {builder.RoomDoorSide(room.Id, corridorId)}) " +
+                                 $"doorway blocked by prefab collider(s) {string.Join(", ", blockers)} at {probe} - the " +
+                                 "authored opening is not facing the corridor (door side flag or rotation wrong)");
+            }
+            return rotated;
+        }
+
+        static Vector3 SideVector(Cardinal side)
+        {
+            switch (side)
+            {
+                case Cardinal.North: return Vector3.forward;
+                case Cardinal.East:  return Vector3.right;
+                case Cardinal.South: return Vector3.back;
+                default:             return Vector3.left;
+            }
+        }
+
+        static bool s_warnedNoObjectives;
+
+        /// <summary>
+        /// Invokes Game.Objectives.ObjectiveTracker.Spawn(layout) by reflection (edit mode: no OnEnable/Start
+        /// subscriptions), then checks the spawned ExitGate / KeyPickup objects against the layout and the
+        /// NavMesh. Skipped with one warning when the assembly or the scene object is missing.
+        /// </summary>
+        static void CheckObjectives(int seed, LevelBuilder builder, LevelLayout layout, Vector3 spawnOnNav, List<string> failures)
+        {
+            System.Type trackerType = FindTypeByName("Game.Objectives.ObjectiveTracker");
+            System.Type gateType = FindTypeByName("Game.Objectives.ExitGate");
+            System.Type keyType = FindTypeByName("Game.Objectives.KeyPickup");
+            var tracker = trackerType != null ? Object.FindAnyObjectByType(trackerType) as Component : null;
+            if (tracker == null || gateType == null || keyType == null)
+            {
+                if (!s_warnedNoObjectives)
+                    UnityEngine.Debug.LogWarning("[HeadlessVerify] no Game.Objectives.ObjectiveTracker in Main.unity " +
+                                                 "(regenerate the scene) - key / exit gate checks skipped");
+                s_warnedNoObjectives = true;
+                return;
+            }
+            var spawn = trackerType.GetMethod("Spawn", BindingFlags.Public | BindingFlags.Instance, null,
+                                              new[] { typeof(LevelLayout) }, null);
+            if (spawn == null) { failures.Add($"seed {seed}: ObjectiveTracker has no public Spawn(LevelLayout)"); return; }
+            spawn.Invoke(tracker, new object[] { layout });
+
+            // ---- exit gate ----
+            var gates = ((Component)tracker).GetComponentsInChildren(gateType, true);
+            Vector3 exitDoor = builder.ExitDoorwayPoint;
+            if (gates.Length != 1)
+                failures.Add($"seed {seed}: {gates.Length} ExitGate objects, expected 1");
+            else
+            {
+                Vector3 g = gates[0].transform.position;
+                float d = Vector2.Distance(new Vector2(g.x, g.z), new Vector2(exitDoor.x, exitDoor.z));
+                if (d > GateMaxDistance)
+                    failures.Add($"seed {seed}: ExitGate at {g} is {d:F2} m from ExitDoorwayPoint {exitDoor} (max {GateMaxDistance})");
+                CheckPath(seed, "exit gate", spawnOnNav, new Vector3(g.x, 0f, g.z), 1.0f, failures, failures);
+            }
+
+            // ---- keys ----
+            var keyObjs = ((Component)tracker).GetComponentsInChildren(keyType, true);
+            var keyRooms = layout.KeyRooms.ToList();
+            if (keyObjs.Length != keyRooms.Count)
+                failures.Add($"seed {seed}: {keyObjs.Length} KeyPickup objects for {keyRooms.Count} key rooms");
+            foreach (var kr in keyRooms)
+            {
+                Vector3 c = builder.RoomWorldCenter(kr.Id);
+                float best = keyObjs.Length == 0 ? float.MaxValue : keyObjs.Min(k =>
+                    Vector2.Distance(new Vector2(k.transform.position.x, k.transform.position.z), new Vector2(c.x, c.z)));
+                if (best > KeyMaxDistance)
+                    failures.Add($"seed {seed}: no KeyPickup within {KeyMaxDistance} m of key room {kr.Id} centre {c} (nearest {best:F2} m)");
+                CheckPath(seed, $"key in room {kr.Id} ({kr.TemplateName})", spawnOnNav, c, 1.5f, failures, failures);
+            }
+
+            // Belt and braces on the role check: no pickup physically inside the spawn or exit room footprint.
+            foreach (var special in new[] { layout.SpawnRoom, layout.ExitRoom })
+            {
+                if (special == null) continue;
+                Vector3 c = builder.RoomWorldCenter(special.Id);
+                foreach (var k in keyObjs)
+                {
+                    Vector3 p = k.transform.position;
+                    if (Mathf.Abs(p.x - c.x) < special.HalfX && Mathf.Abs(p.z - c.z) < special.HalfZ)
+                        failures.Add($"seed {seed}: KeyPickup {k.name} lies inside {special.Role} room {special.Id}");
+                }
+            }
+        }
+
+        /// <summary>SpawnRoom and EndRoom must each be placed on >= 75% of the seeds; logs total template usage.</summary>
+        static void CheckSpecialRoomSweep(int seedCount, int spawnSeeds, int endSeeds, int rotatedPrefabRooms,
+                                          Dictionary<string, int> templateTotals, List<string> failures)
+        {
+            int need = Mathf.CeilToInt(seedCount * RequiredSpecialRoomShare);
+            UnityEngine.Debug.Log($"[HeadlessVerify] TemplateUsage over {seedCount} seeds: " +
+                $"{string.Join(", ", templateTotals.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key).Select(kv => $"{kv.Key} x{kv.Value}"))}; " +
+                $"seeds with {SpawnTemplateName}={spawnSeeds}/{seedCount}, {EndTemplateName}={endSeeds}/{seedCount} (need {need}); " +
+                $"rotated prefab rooms={rotatedPrefabRooms}");
+            if (spawnSeeds < need)
+                failures.Add($"template \"{SpawnTemplateName}\" placed on {spawnSeeds}/{seedCount} seeds, need >= {need} " +
+                             "(rotation should let a one-door prefab fit any spawn leaf)");
+            if (endSeeds < need)
+                failures.Add($"template \"{EndTemplateName}\" placed on {endSeeds}/{seedCount} seeds, need >= {need} " +
+                             "(rotation should let a one-door prefab fit any exit leaf)");
         }
 
         // ------------------------------------------------------------------ v5 checks (demo build)

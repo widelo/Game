@@ -159,13 +159,28 @@ namespace LevelGen.Core
             }
         }
 
-        /// <summary>Number of key rooms actually placed for a layout of <paramref name="roomCount"/> rooms.</summary>
+        /// <summary>Number of key rooms actually placed for a layout of <paramref name="roomCount"/> rooms (no exit room).</summary>
         public static int ClampKeyRooms(int requested, int roomCount)
         {
-            int max = roomCount - 1; // spawn is never a key room
+            return ClampKeyRooms(requested, roomCount, false);
+        }
+
+        /// <summary>
+        /// v4: number of key rooms actually placed. Neither the spawn nor (when <paramref name="hasExit"/>) the exit
+        /// room may hold a key, so a 2-room level with an exit gets 0 keys.
+        /// </summary>
+        public static int ClampKeyRooms(int requested, int roomCount, bool hasExit)
+        {
+            int max = roomCount - 1 - (hasExit ? 1 : 0);
             if (max < 0) max = 0;
             if (requested < 0) return 0;
             return requested > max ? max : requested;
+        }
+
+        /// <summary>v4: true when a layout of <paramref name="roomCount"/> rooms gets an Exit room (needs a non-spawn room).</summary>
+        public static bool HasExitRoom(LevelGenSettings settings, int roomCount)
+        {
+            return settings != null && settings.ExitRoom && roomCount >= 2;
         }
 
         public static LevelLayout Generate(int seed, LevelGenSettings settings = null)
@@ -273,6 +288,22 @@ namespace LevelGen.Core
             for (int i = 0; i < n; i++) doorLimit[i] = 4;
             doorLimit[0] = spawnCap;
 
+            // --- 3a. v4: exit room, reserved BEFORE loop edges ---------------------------------
+            // Picked among the growth tree's non-spawn leaves (a tree with n >= 2 always has one) and given a
+            // door budget of 1, exactly like the spawn, so the loop pass can never take its dead end away.
+            // Loops only shorten paths and the exit's single corridor is its tree edge, so the distance
+            // ordering chosen here survives on the final graph.
+            bool hasExit = HasExitRoom(settings, n);
+            int exitId = -1;
+            if (hasExit)
+            {
+                var tree = new List<KeyValuePair<int, int>>(treeEdges.Count);
+                for (int i = 0; i < treeEdges.Count; i++)
+                    tree.Add(new KeyValuePair<int, int>(oldToNew[treeEdges[i].Key], oldToNew[treeEdges[i].Value]));
+                exitId = ChooseExitRoom(n, tree, settings.ExitMinDistance, rnd);
+                if (exitId > 0) doorLimit[exitId] = 1;
+            }
+
             var degree = new int[n];
             var treeEdgeSet = new HashSet<long>();
             var edges = new List<KeyValuePair<int, int>>(treeEdges.Count);
@@ -345,8 +376,11 @@ namespace LevelGen.Core
                 roomB.CorridorIds.Add(corridor.Id);
             }
 
-            // --- 6. roles: key rooms ----------------------------------------------
-            int keyCount = ClampKeyRooms(settings.KeyRooms, n);
+            // --- 6a. v4: exit role (room reserved in 3a) ------------------------------
+            if (exitId > 0) layout.Rooms[exitId].Role = RoomRole.Exit;
+
+            // --- 6b. roles: key rooms (never spawn, never exit) -----------------------
+            int keyCount = ClampKeyRooms(settings.KeyRooms, n, hasExit);
             if (keyCount > 0)
             {
                 int[] dist = layout.BfsDistances(0);
@@ -354,6 +388,7 @@ namespace LevelGen.Core
                 var near = new List<int>();
                 for (int i = 1; i < n; i++)
                 {
+                    if (i == exitId) continue;
                     if (dist[i] >= 2) far.Add(i);
                     if (dist[i] >= 1) near.Add(i);
                 }
@@ -370,10 +405,9 @@ namespace LevelGen.Core
 
             // --- 7. v3: templates --------------------------------------------------
             // Deliberate ordering: the graph (tree + loops + roles) is FINAL before any template is
-            // chosen, so template constraints only ever FILTER - they never steer the lattice. The
-            // consequence, and it is a real limitation: a prefab room whose AllowedDoors names a single
-            // side is only placed where the lattice already agrees (we never rotate prefabs). Teammates
-            // who want their prefab placed often should use DoorSides.All, or at least two sides.
+            // chosen, so template constraints only ever FILTER - they never steer the lattice. v4: a
+            // template may be ROTATED (0/90/180/270, Room.TemplateRotationDeg) so its allowed door sides
+            // face the corridors the lattice provides; a one-doorway prefab now fits any one-door cell.
             AssignTemplates(layout, settings, rnd);
 
             // Template footprints may differ from the rolled sizes, so corridor endpoints are rebuilt
@@ -389,6 +423,44 @@ namespace LevelGen.Core
         // =============================================================================================
         // v3: template selection
         // =============================================================================================
+
+        // =============================================================================================
+        // v4: exit room
+        // =============================================================================================
+
+        /// <summary>
+        /// Picks the Exit room on the growth TREE (edges already re-indexed, spawn = 0). Candidates: non-spawn
+        /// leaves; those at tree distance &gt;= <paramref name="minDistance"/> are preferred when any exist (the
+        /// farthest always is), then the farthest from spawn wins; ties are broken with exactly one rnd draw.
+        /// Returns -1 when there is no non-spawn room.
+        /// </summary>
+        private static int ChooseExitRoom(int n, List<KeyValuePair<int, int>> tree, int minDistance, Random rnd)
+        {
+            if (n < 2) return -1;
+            var adj = new List<int>[n];
+            for (int i = 0; i < n; i++) adj[i] = new List<int>();
+            foreach (var e in tree) { adj[e.Key].Add(e.Value); adj[e.Value].Add(e.Key); }
+            var dist = new int[n];
+            for (int i = 0; i < n; i++) dist[i] = -1;
+            dist[0] = 0;
+            var q = new Queue<int>();
+            q.Enqueue(0);
+            while (q.Count > 0)
+            {
+                int cur = q.Dequeue();
+                foreach (int nb in adj[cur]) if (dist[nb] < 0) { dist[nb] = dist[cur] + 1; q.Enqueue(nb); }
+            }
+
+            var cand = new List<int>();
+            for (int i = 1; i < n; i++) if (adj[i].Count == 1) cand.Add(i);
+            if (cand.Count == 0) for (int i = 1; i < n; i++) cand.Add(i); // unreachable for a tree; defensive
+
+            int best = int.MinValue;
+            foreach (int i in cand) if (dist[i] > best) best = dist[i];
+            var top = new List<int>();
+            foreach (int i in cand) if (dist[i] == best) top.Add(i);
+            return top[rnd.Next(top.Count)];
+        }
 
         /// <summary>Flags for every side of <paramref name="room"/> that has a corridor attached.</summary>
         public static DoorSides AttachedDoorSides(LevelLayout layout, Room room)
@@ -416,7 +488,9 @@ namespace LevelGen.Core
                 case RoleAffinity.SpawnOnly: return role == RoomRole.Spawn;
                 case RoleAffinity.KeyOnly: return role == RoomRole.Key;
                 case RoleAffinity.NormalOnly: return role == RoomRole.Normal;
-                default: return role != RoomRole.Spawn; // NeverSpawn
+                case RoleAffinity.NeverSpawn: return role != RoomRole.Spawn;
+                case RoleAffinity.ExitOnly: return role == RoomRole.Exit;
+                default: return false;
             }
         }
 
@@ -427,11 +501,44 @@ namespace LevelGen.Core
         /// </summary>
         public static bool TemplateFits(RoomTemplateSpec t, Room room, DoorSides attached)
         {
+            if (!RoleAndDoorCountFit(t, room)) return false;
+            return (attached & ~t.AllowedDoors) == DoorSides.None;
+        }
+
+        /// <summary>
+        /// v4: like <see cref="TemplateFits(RoomTemplateSpec, Room, DoorSides)"/> but also tries the template rotated
+        /// 90/180/270 (when <c>t.AllowRotation</c>). <paramref name="rotation"/> is the first fitting yaw in the
+        /// order 0, 90, 180, 270 (0 when nothing fits). Does not consult LevelGenSettings.AllowTemplateRotation.
+        /// </summary>
+        public static bool TemplateFits(RoomTemplateSpec t, Room room, DoorSides attached, out int rotation)
+        {
+            rotation = 0;
+            var rots = FittingRotations(t, room, attached, true);
+            if (rots.Count == 0) return false;
+            rotation = rots[0];
+            return true;
+        }
+
+        private static bool RoleAndDoorCountFit(RoomTemplateSpec t, Room room)
+        {
             if (t == null || room == null) return false;
             if (!AffinityAllows(t.Affinity, room.Role)) return false;
             if (room.DoorCount < t.MinDoors || room.DoorCount > t.MaxDoors) return false;
-            if ((attached & ~t.AllowedDoors) != DoorSides.None) return false;
             return true;
+        }
+
+        /// <summary>Every yaw (ascending, from 0/90/180/270) at which <paramref name="t"/> fits the room's attached sides.</summary>
+        private static List<int> FittingRotations(RoomTemplateSpec t, Room room, DoorSides attached, bool rotationEnabled)
+        {
+            var result = new List<int>(4);
+            if (!RoleAndDoorCountFit(t, room)) return result;
+            int steps = rotationEnabled && t.AllowRotation ? 4 : 1;
+            for (int k = 0; k < steps; k++)
+            {
+                int rot = k * 90;
+                if ((attached & ~t.AllowedDoors.Rotate(rot)) == DoorSides.None) result.Add(rot);
+            }
+            return result;
         }
 
         private static void AssignTemplates(LevelLayout layout, LevelGenSettings settings, Random rnd)
@@ -444,15 +551,29 @@ namespace LevelGen.Core
             {
                 var room = layout.Rooms[i];
                 RoomTemplateSpec chosen = null;
+                int rotation = 0;
+                room.TemplateRotationDeg = 0;
 
                 if (any)
                 {
                     DoorSides attached = AttachedDoorSides(layout, room);
-                    // Spawn room: SpawnOnly templates get the first pass.
+                    bool rotOn = settings.AllowTemplateRotation;
+                    // Spawn room: SpawnOnly templates get the first pass; v4: Exit room likewise for ExitOnly.
                     if (room.Role == RoomRole.Spawn)
-                        chosen = Pick(templates, room, attached, rnd, true);
+                        chosen = Pick(templates, room, attached, rnd, RoleAffinity.SpawnOnly, rotOn);
+                    else if (room.Role == RoomRole.Exit)
+                        chosen = Pick(templates, room, attached, rnd, RoleAffinity.ExitOnly, rotOn);
                     if (chosen == null)
-                        chosen = Pick(templates, room, attached, rnd, false);
+                        chosen = Pick(templates, room, attached, rnd, null, rotOn);
+
+                    if (chosen != null)
+                    {
+                        // Authored orientation (0) wins whenever it fits, so existing placements and footprints
+                        // are untouched; otherwise one draw picks uniformly among the fitting yaws.
+                        var rots = FittingRotations(chosen, room, attached, rotOn);
+                        if (rots.Count > 0 && rots[0] != 0)
+                            rotation = rots.Count == 1 ? rots[0] : rots[rnd.Next(rots.Count)];
+                    }
                 }
 
                 if (chosen == null)
@@ -466,9 +587,14 @@ namespace LevelGen.Core
                 {
                     room.Template = chosen;
                     room.TemplateName = chosen.Name;
+                    room.TemplateRotationDeg = rotation;
                     bool fixedFootprint = chosen.FixedSizeX > 0 || chosen.FixedSizeZ > 0;
-                    if (chosen.FixedSizeX > 0) room.SizeX = chosen.FixedSizeX;
-                    if (chosen.FixedSizeZ > 0) room.SizeZ = chosen.FixedSizeZ;
+                    // A quarter turn swaps the authored footprint's axes in world space.
+                    bool quarter = rotation == 90 || rotation == 270;
+                    double fx = quarter ? chosen.FixedSizeZ : chosen.FixedSizeX;
+                    double fz = quarter ? chosen.FixedSizeX : chosen.FixedSizeZ;
+                    if (fx > 0) room.SizeX = fx;
+                    if (fz > 0) room.SizeZ = fz;
                     if (fixedFootprint) room.Shape = RoomShape.Rectangle;
                     else if (chosen.OverrideShape) room.Shape = chosen.Shape;
                     if (chosen.ForcedType.HasValue) room.Type = chosen.ForcedType.Value;
@@ -480,17 +606,20 @@ namespace LevelGen.Core
             }
         }
 
-        /// <summary>Weighted random pick among the eligible templates. Consumes exactly one draw, or none when nothing fits.</summary>
+        /// <summary>
+        /// Weighted random pick among the eligible templates. Consumes exactly one draw, or none when nothing fits.
+        /// <paramref name="onlyAffinity"/> restricts the pass to one affinity (SpawnOnly / ExitOnly first passes).
+        /// </summary>
         private static RoomTemplateSpec Pick(List<RoomTemplateSpec> templates, Room room, DoorSides attached,
-                                             Random rnd, bool spawnOnlyPass)
+                                             Random rnd, RoleAffinity? onlyAffinity, bool rotationEnabled)
         {
             double total = 0;
             for (int i = 0; i < templates.Count; i++)
             {
                 var t = templates[i];
                 if (t == null || t.Weight <= 0) continue;
-                if (spawnOnlyPass && t.Affinity != RoleAffinity.SpawnOnly) continue;
-                if (!TemplateFits(t, room, attached)) continue;
+                if (onlyAffinity.HasValue && t.Affinity != onlyAffinity.Value) continue;
+                if (FittingRotations(t, room, attached, rotationEnabled).Count == 0) continue;
                 total += t.Weight;
             }
             if (total <= 0) return null;
@@ -502,8 +631,8 @@ namespace LevelGen.Core
             {
                 var t = templates[i];
                 if (t == null || t.Weight <= 0) continue;
-                if (spawnOnlyPass && t.Affinity != RoleAffinity.SpawnOnly) continue;
-                if (!TemplateFits(t, room, attached)) continue;
+                if (onlyAffinity.HasValue && t.Affinity != onlyAffinity.Value) continue;
+                if (FittingRotations(t, room, attached, rotationEnabled).Count == 0) continue;
                 last = t;
                 acc += t.Weight;
                 if (pick < acc) return t;

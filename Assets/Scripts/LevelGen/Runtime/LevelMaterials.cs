@@ -32,6 +32,7 @@ namespace LevelGen.Unity
         public Material FixtureBody;     // unlit-looking lamp housing
         public Material SpawnMarker;
         public Material KeyMarker;
+        public Material ExitMarker;
 
         readonly Dictionary<LightTint, Material> emissive = new Dictionary<LightTint, Material>();
 
@@ -72,7 +73,7 @@ namespace LevelGen.Unity
 
             genFloor = genWall = genCorridorFloor = genCeiling = null;
             MattressWhite = MetalGreyBlue = DarkWood = Laminate = DarkDetail = null;
-            FixtureBody = SpawnMarker = KeyMarker = null;
+            FixtureBody = SpawnMarker = KeyMarker = ExitMarker = null;
             Floor = Wall = CorridorFloor = Ceiling = null;
         }
 
@@ -174,6 +175,7 @@ namespace LevelGen.Unity
 
             Cached(ref SpawnMarker, "GenSpawnMarker", new Color(0.2f, 1f, 0.3f), 0f);
             Cached(ref KeyMarker,   "GenKeyMarker",   new Color(1f, 0.9f, 0.2f), 0f);
+            Cached(ref ExitMarker,  "GenExitMarker",  new Color(1f, 0.15f, 0.15f), 0f);
         }
 
         /// <summary>

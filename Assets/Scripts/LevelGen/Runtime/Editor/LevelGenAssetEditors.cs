@@ -92,8 +92,9 @@ namespace LevelGen.Unity.Editor
                                             "floor COLLIDER, the NavMesh will have nothing to bake on in that room.",
                                             MessageType.Warning);
 
-                if (t.affinity != RoleAffinity.SpawnOnly && t.affinity != RoleAffinity.NeverSpawn) anySpawnCapable = true;
-                if (t.affinity == RoleAffinity.SpawnOnly) anySpawnCapable = true;
+                // Only Any and SpawnOnly can land on the spawn cell (KeyOnly / NormalOnly / NeverSpawn /
+                // ExitOnly cannot).
+                if (t.affinity == RoleAffinity.Any || t.affinity == RoleAffinity.SpawnOnly) anySpawnCapable = true;
             }
 
             if (!anySpawnCapable)

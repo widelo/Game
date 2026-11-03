@@ -1,5 +1,5 @@
 // Scene-side driver: generate a LevelLayout from a seed, turn it into meshes + colliders + prefab rooms +
-// props + lights, apply the horror render settings, bake a NavMesh, drop spawn/key markers, fire OnLevelBuilt.
+// props + lights, apply the horror render settings, bake a NavMesh, drop spawn/key/exit markers, fire OnLevelBuilt.
 // Everything it creates lives under one child named "Level", so a rebuild is a single Destroy.
 //
 // Place this component at the world origin with an identity transform: mesh vertices are authored in the
@@ -136,6 +136,51 @@ namespace LevelGen.Unity
 
         public static Vector3 ToWorld(Vec2 v) => new Vector3((float)v.X, 0f, (float)v.Z);
 
+        /// <summary>
+        /// v4. Side of room <paramref name="roomId"/> that corridor <paramref name="corridorId"/> enters through,
+        /// in WORLD orientation (already accounts for Room.TemplateRotationDeg - Core resolves corridors against
+        /// the placed room). Throws ArgumentException when nothing is built, an id is unknown, or the corridor
+        /// does not touch the room.
+        /// </summary>
+        public Cardinal RoomDoorSide(int roomId, int corridorId)
+        {
+            Room room = FindRoom(roomId);
+            Corridor c = FindCorridor(corridorId);
+            if (room == null || c == null)
+                throw new ArgumentException($"[LevelBuilder] RoomDoorSide: unknown room {roomId} or corridor " +
+                                            $"{corridorId} (built: {CurrentLayout != null}).");
+            if (c.RoomA == roomId) return c.DirectionFromA;
+            if (c.RoomB == roomId) return c.DirectionFromA.Opposite();
+            throw new ArgumentException($"[LevelBuilder] RoomDoorSide: corridor {corridorId} joins rooms " +
+                                        $"{c.RoomA} and {c.RoomB}, not {roomId}.");
+        }
+
+        /// <summary>
+        /// v4. Floor-level (y = 0) world point on room <paramref name="roomId"/>'s boundary where corridor
+        /// <paramref name="corridorId"/> enters: ToWorld(room.BoundaryPoint(RoomDoorSide(...))). Same throw
+        /// contract as <see cref="RoomDoorSide"/>.
+        /// </summary>
+        public Vector3 RoomDoorwayWorld(int roomId, int corridorId)
+        {
+            Cardinal side = RoomDoorSide(roomId, corridorId);
+            return ToWorld(FindRoom(roomId).BoundaryPoint(side));
+        }
+
+        /// <summary>
+        /// v4. Floor-level (y = 0) world centres of the key rooms of the level currently in the scene, in
+        /// LevelLayout.KeyRooms order. Computed at the start of Build, so it is already valid inside
+        /// <see cref="OnRoomBuilt"/> handlers. Empty before the first build.
+        /// </summary>
+        public IReadOnlyList<Vector3> KeySpawnPoints => keySpawnPoints;
+
+        /// <summary>
+        /// v4. Floor-level (y = 0) world point of the exit room's doorway: the boundary point of its single
+        /// (first) corridor, or the exit room centre if it has no corridor. When the layout has no exit room
+        /// (LevelGenSettings.ExitRoom off) this falls back to the SPAWN room's doorway by the same rule, matching
+        /// the "return to spawn" escape rule. Computed at the start of Build; Vector3.zero before any build.
+        /// </summary>
+        public Vector3 ExitDoorwayPoint { get; private set; }
+
         /// <summary>Destroy the previous level, generate from <paramref name="newSeed"/>, build, bake, notify.</summary>
         public void Build(int newSeed)
         {
@@ -146,6 +191,7 @@ namespace LevelGen.Unity
             int materialsBefore = mats.CreatedCount;
             LevelLayout layout = LevelGenerator.Generate(newSeed, p.ToSettings());
             CurrentLayout = layout;
+            ComputeObjectivePoints(layout);
 
             float ceiling = Mathf.Max(1.5f, (float)layout.Settings.CeilingHeight);
             float wallThickness = Mathf.Max(0.01f, p.wallThickness);
@@ -166,6 +212,7 @@ namespace LevelGen.Unity
 
             int propCount = 0, lightCount = 0, prefabRooms = 0;
             fittedPrefabs = 0;
+            rotatedPrefabRooms = 0;
 
             for (int i = 0; i < layout.Rooms.Count; i++)
             {
@@ -193,7 +240,8 @@ namespace LevelGen.Unity
                       $"corridors={layout.Corridors.Count} props={propCount} lights={lightCount} " +
                       $"prefabRooms={prefabRooms} meshes={runtimeMeshes.Count} " +
                       $"matsCreated={mats.CreatedCount - materialsBefore} " +
-                      $"navmesh={(navOk ? "ok" : "none")} fittedPrefabs={fittedPrefabs}");
+                      $"navmesh={(navOk ? "ok" : "none")} fittedPrefabs={fittedPrefabs} " +
+                      $"rotatedPrefabRooms={rotatedPrefabRooms} exit={(layout.ExitRoom != null ? layout.ExitRoom.Id.ToString() : "none")}");
 
             OnLevelBuilt?.Invoke(layout);
         }
@@ -214,6 +262,45 @@ namespace LevelGen.Unity
         int propIndex;
         int lightIndex;
         int fittedPrefabs;
+        int rotatedPrefabRooms;
+
+        readonly List<Vector3> keySpawnPoints = new List<Vector3>();
+
+        Room FindRoom(int roomId)
+        {
+            LevelLayout l = CurrentLayout;
+            if (l == null || roomId < 0 || roomId >= l.Rooms.Count) return null;
+            Room r = l.Rooms[roomId];
+            return r != null && r.Id == roomId ? r : l.Rooms.Find(x => x != null && x.Id == roomId);
+        }
+
+        Corridor FindCorridor(int corridorId)
+        {
+            LevelLayout l = CurrentLayout;
+            if (l == null || corridorId < 0) return null;
+            if (corridorId < l.Corridors.Count && l.Corridors[corridorId] != null &&
+                l.Corridors[corridorId].Id == corridorId)
+                return l.Corridors[corridorId];
+            return l.Corridors.Find(x => x != null && x.Id == corridorId);
+        }
+
+        /// <summary>KeySpawnPoints + ExitDoorwayPoint: pure functions of the layout, so set before any room
+        /// is built and OnRoomBuilt handlers can already use them.</summary>
+        void ComputeObjectivePoints(LevelLayout layout)
+        {
+            keySpawnPoints.Clear();
+            foreach (Room key in layout.KeyRooms)
+                keySpawnPoints.Add(ToWorld(key.Center));
+
+            Room exit = layout.ExitRoom ?? layout.SpawnRoom;
+            if (exit == null) { ExitDoorwayPoint = Vector3.zero; return; }
+            ExitDoorwayPoint = ToWorld(exit.Center);
+            if (exit.CorridorIds == null || exit.CorridorIds.Count == 0) return;
+            Corridor c = FindCorridor(exit.CorridorIds[0]);
+            if (c != null && (c.RoomA == exit.Id || c.RoomB == exit.Id))
+                ExitDoorwayPoint = ToWorld(exit.BoundaryPoint(c.RoomA == exit.Id ? c.DirectionFromA
+                                                                                 : c.DirectionFromA.Opposite()));
+        }
 
         readonly Dictionary<int, GameObject> roomObjects = new Dictionary<int, GameObject>();
         readonly Dictionary<int, GameObject> corridorObjects = new Dictionary<int, GameObject>();
@@ -232,6 +319,8 @@ namespace LevelGen.Unity
             lightIndex = 0;
             roomObjects.Clear();
             corridorObjects.Clear();
+            keySpawnPoints.Clear();
+            ExitDoorwayPoint = Vector3.zero;
             LevelRoot = null;
 
             Transform existing = transform.Find(LevelRootName);
@@ -310,17 +399,40 @@ namespace LevelGen.Unity
 
             // ------------------------------------------------------------ the hand-built room prefab
             //
-            // Placed at the room centre with identity rotation and y = 0. No NavMeshModifier is added and no
-            // collider is synthesised: the prefab is a child of "Level", and the runtime NavMeshSurface
-            // collects its children's physics colliders, so whatever colliders the author put in the prefab
-            // (and only those) shape the NavMesh.
+            // Placed at the room centre, y = 0, yawed by Room.TemplateRotationDeg (v4: Core rotates a template
+            // so its authored door sides face the lattice's corridors; positive yaw = clockwise from above, the
+            // same sense as DoorSides.Rotate, so an authored North doorway ends up East at 90). prefabOffset is
+            // authored in the prefab's own frame, so it is rotated by the same yaw - i.e. the rotation is about
+            // the room centre. No NavMeshModifier is added and no collider is synthesised: the prefab is a child
+            // of "Level", and the runtime NavMeshSurface collects its children's physics colliders, so whatever
+            // colliders the author put in the prefab (and only those) shape the NavMesh.
             if (asset != null && asset.prefab != null)
             {
+                Quaternion yaw = Quaternion.Euler(0f, room.TemplateRotationDeg, 0f);
                 GameObject instance = Instantiate(asset.prefab, holder.transform);
                 instance.name = asset.prefab.name;
-                instance.transform.localPosition = ToWorld(room.Center) + asset.prefabOffset;
-                instance.transform.localRotation = Quaternion.identity;
+                instance.transform.localPosition = ToWorld(room.Center) + yaw * asset.prefabOffset;
+                // Small props an author leaves in a doorway (a padlock, a sign) must not carve the NavMesh and seal
+                // the room: anything under 1 m in every dimension is excluded from the bake. Walls and floors stay.
+                foreach (var col in instance.GetComponentsInChildren<Collider>(true))
+                {
+                    Vector3 size = col.bounds.size;
+                    if (Mathf.Max(size.x, size.y, size.z) < 1.0f && col.GetComponentInParent<NavMeshModifier>() == null)
+                    {
+                        var mod = col.gameObject.AddComponent<NavMeshModifier>();
+                        mod.ignoreFromBuild = true;
+                    }
+                }
+                instance.transform.localRotation = yaw;
                 prefabRooms++;
+                if (((room.TemplateRotationDeg % 360) + 360) % 360 != 0) rotatedPrefabRooms++;
+
+                // A prefab room that brings its own floor (GenerateFloor off) is only walkable if that floor has
+                // a collider; with none at all the bake has nothing in this room.
+                if (!spec.GenerateFloor && instance.GetComponentsInChildren<Collider>(true).Length == 0)
+                    Debug.LogWarning($"[LevelBuilder] Room {room.Id} template '{asset.SpecName}' " +
+                                     $"(prefab '{asset.prefab.name}'): prefab has no colliders; the NavMesh will " +
+                                     "not cover it.", asset);
             }
 
             if (spec.GenerateProps && room.Props != null && room.Props.Count > 0)
@@ -477,6 +589,10 @@ namespace LevelGen.Unity
 
             foreach (Room key in layout.KeyRooms)
                 AddMarker(root.transform, $"KeyMarker_{key.Id}", ToWorld(key.Center), mats.KeyMarker, markerSize);
+
+            Room exit = layout.ExitRoom;
+            if (exit != null)
+                AddMarker(root.transform, "ExitMarker", ToWorld(exit.Center), mats.ExitMarker, markerSize);
         }
 
         /// <summary>Visual placeholder only - no trigger, no collider, no pickup logic (out of scope for this pass).</summary>
@@ -535,6 +651,7 @@ namespace LevelGen.Unity
 
                 Gizmos.color = room.Role == RoomRole.Spawn ? Color.green
                              : room.Role == RoomRole.Key ? Color.yellow
+                             : room.Role == RoomRole.Exit ? Color.red
                              : Color.cyan;
                 Gizmos.DrawSphere(c, 0.4f);
 

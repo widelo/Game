@@ -120,6 +120,17 @@ namespace LevelGen.Unity
         [Tooltip("Maximum corridors on the spawn/exit room. 1 = the spawn room is a dead-end leaf with one doorway.")]
         [Min(1)] public int spawnMaxDoors = 1;
 
+        [Tooltip("v4: generate an Exit room (a one-door dead end far from spawn, never a key room). Off = no " +
+                 "exit room; gameplay treats the spawn room as the exit.")]
+        public bool exitRoom = true;
+
+        [Tooltip("v4: minimum corridor-hop distance from spawn to the exit room, when the level has enough rooms.")]
+        [Min(0)] public int exitMinDistance = 2;
+
+        [Tooltip("v4: let the generator rotate templates (0/90/180/270) so their door sides match the lattice. " +
+                 "Per-template opt-out: RoomTemplateAsset.allowRotation.")]
+        public bool allowTemplateRotation = true;
+
         // ------------------------------------------------------------------ contents (LevelGenSettings)
         [Header("Contents")]
         public float ceilingHeight = 3.0f;
@@ -207,6 +218,9 @@ namespace LevelGen.Unity
                 GridHeight = gridHeight,
                 EllipseChance = ellipseChance,
                 SpawnMaxDoors = spawnMaxDoors,
+                ExitRoom = exitRoom,
+                ExitMinDistance = Mathf.Max(0, exitMinDistance),
+                AllowTemplateRotation = allowTemplateRotation,
                 Templates = new List<RoomTemplateSpec>()
             };
 

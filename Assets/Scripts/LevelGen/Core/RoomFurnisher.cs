@@ -50,6 +50,9 @@ namespace LevelGen.Core
         public const double SpawnCentreClearance = 3.0; // ... 3 m in the spawn room (player spawns there)
         public const double LaneInflate = 0.6;          // props are inflated by this much against a lane
         public const double CorridorWalkway = 1.6;      // clear width that must remain on one side
+        /// <summary>v4: spawn and exit rooms both keep SpawnCentreClearance around their centre.</summary>
+        public static bool UsesSpawnClearance(RoomRole role) => role == RoomRole.Spawn || role == RoomRole.Exit;
+
         public const double CorridorPropEndGap = 1.5;   // corridor props stay this far from both ends
         public const double WallTouchEps = 0.05;        // "against a wall" tolerance
         public const double GeomEps = 1e-6;
@@ -127,7 +130,8 @@ namespace LevelGen.Core
                     if (r.Type == RoomType.Office || r.Type == RoomType.NurseStation) hasAdmin = true;
                     continue;
                 }
-                if (r.Role == RoomRole.Spawn) { r.Type = RoomType.Lobby; continue; }
+                // v4: the exit room is a sparse Lobby too (door/padlock prop + player need the 3 m centre).
+                if (r.Role == RoomRole.Spawn || r.Role == RoomRole.Exit) { r.Type = RoomType.Lobby; continue; }
 
                 bool wardOk = r.SizeX >= 10.0 && r.SizeZ >= 10.0;
                 // weights: PatientRoom 35, Ward 20 (only if it fits), Office 20, NurseStation 10, Storage 15
@@ -146,7 +150,10 @@ namespace LevelGen.Core
             // Hospital feel: a level of any size worth the name has at least one admin space.
             if (n >= 6 && !hasAdmin)
             {
-                int target = 1 + rnd.Next(n - 1);
+                // v4: the exit room keeps its Lobby; candidates are every non-spawn, non-exit room (one draw).
+                var pool = new List<int>(n);
+                for (int i = 1; i < n; i++) if (layout.Rooms[i].Role != RoomRole.Exit) pool.Add(i);
+                int target = pool[rnd.Next(pool.Count)];
                 bool forced = layout.Rooms[target].Template != null && layout.Rooms[target].Template.ForcedType.HasValue;
                 var pickAdmin = rnd.NextDouble() < 0.5 ? RoomType.Office : RoomType.NurseStation;
                 if (!forced) layout.Rooms[target].Type = pickAdmin;
@@ -322,7 +329,7 @@ namespace LevelGen.Core
             public RoomWalkability.Grid Grid;
 
             public double CentreClear =>
-                Room.Role == RoomRole.Spawn ? SpawnCentreClearance : CentreClearance;
+                UsesSpawnClearance(Room.Role) ? SpawnCentreClearance : CentreClearance;
 
             public bool Fits(Prop p, bool centreException)
             {
@@ -680,6 +687,7 @@ namespace LevelGen.Core
             double darkRoll = rnd.NextDouble();
             bool dark = darkRoll < s.DarkRoomChance
                         && room.Role != RoomRole.Spawn
+                        && room.Role != RoomRole.Exit
                         && (room.Role != RoomRole.Key || keyDark < 1);
             if (dark && room.Role == RoomRole.Key) keyDark++;
 
