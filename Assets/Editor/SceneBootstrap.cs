@@ -175,6 +175,11 @@ namespace Game.Editor
 
             fpc.cameraPivot = camGo.transform;
 
+            // Visible body for mirrors (layer "PlayerBody" = 30, hidden from the first-person camera by the body itself).
+            EnsureLayerName(30, "PlayerBody");
+            var bodyInstall = FindType("Game.Player.PlayerBody")?.GetMethod("Install", new[] { typeof(GameObject) });
+            if (bodyInstall != null) { bodyInstall.Invoke(null, new object[] { playerGo }); UnityEngine.Debug.Log("[SceneBootstrap] PlayerBody installed on the player (layer 30 PlayerBody)"); }
+
             // ---- debug driver ----
             var debugGo = new GameObject("Debug");
             var dbg = debugGo.AddComponent<Game.Debug.LevelDebugController>();
@@ -1091,5 +1096,23 @@ namespace Game.Editor
             }
             return null;
         }
+        /// <summary>Names a user layer in ProjectSettings/TagManager.asset if it is unnamed or already that name.</summary>
+        static void EnsureLayerName(int index, string name)
+        {
+            var tagManager = new SerializedObject(AssetDatabase.LoadAllAssetsAtPath("ProjectSettings/TagManager.asset")[0]);
+            var layers = tagManager.FindProperty("layers");
+            if (layers == null || index >= layers.arraySize) return;
+            var slot = layers.GetArrayElementAtIndex(index);
+            if (slot.stringValue == name) return;
+            if (!string.IsNullOrEmpty(slot.stringValue))
+            {
+                UnityEngine.Debug.LogWarning($"[SceneBootstrap] layer {index} is already named '{slot.stringValue}'; leaving it (PlayerBody falls back to index 30 regardless)");
+                return;
+            }
+            slot.stringValue = name;
+            tagManager.ApplyModifiedPropertiesWithoutUndo();
+            UnityEngine.Debug.Log($"[SceneBootstrap] layer {index} named '{name}'");
+        }
+
     }
 }

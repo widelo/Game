@@ -291,6 +291,70 @@ namespace LevelGen.Core.Tests
         }
 
         [Test]
+        public void Generate_MirrorsAreCommonFlushAndFaceTheRoom_OverSeeds0To199()
+        {
+            int mirrors = 0;
+            for (int seed = 0; seed < 200; seed++)
+            {
+                var layout = LevelGenerator.Generate(seed);
+                foreach (var r in layout.Rooms)
+                {
+                    int inRoom = 0;
+                    foreach (var p in r.Props)
+                    {
+                        if (p.Type != PropType.Mirror) continue;
+                        inRoom++;
+                        mirrors++;
+                        string where = "seed " + seed + " room " + r.Id + " (" + r.Type + ") mirror at " + p.Position;
+                        Assert.AreEqual(RoomShape.Rectangle, r.Shape, where + " is in a non-rectangular room");
+                        Assert.Greater(RoomFurnisher.MirrorChance(r.Type), 0.0, where + ": archetype never gets mirrors");
+                        var box = RoomFurnisher.PropBox(p);
+                        Assert.IsTrue(RoomFurnisher.TouchesAWall(r, box), where + " is not flush to a wall");
+
+                        // Convention: local +Z points at the wall it hangs on (Unity yaw = RotationDeg).
+                        double rad = p.RotationDeg * Math.PI / 180.0;
+                        double fx = Math.Sin(rad), fz = Math.Cos(rad);
+                        double backX = p.Position.X + fx * p.SizeZ * 0.5, backZ = p.Position.Z + fz * p.SizeZ * 0.5;
+                        bool backOnWall =
+                               (fz > 0.5 && Math.Abs(backZ - (r.Center.Z + r.HalfZ)) <= RoomFurnisher.WallTouchEps)
+                            || (fz < -0.5 && Math.Abs(backZ - (r.Center.Z - r.HalfZ)) <= RoomFurnisher.WallTouchEps)
+                            || (fx > 0.5 && Math.Abs(backX - (r.Center.X + r.HalfX)) <= RoomFurnisher.WallTouchEps)
+                            || (fx < -0.5 && Math.Abs(backX - (r.Center.X - r.HalfX)) <= RoomFurnisher.WallTouchEps);
+                        Assert.IsTrue(backOnWall, where + " rot " + p.RotationDeg + ": local +Z does not point at the wall it touches");
+                    }
+                    Assert.LessOrEqual(inRoom, 1, "seed " + seed + " room " + r.Id + " has more than one mirror");
+                }
+                foreach (var c in layout.Corridors)
+                    foreach (var p in c.Props)
+                        Assert.AreNotEqual(PropType.Mirror, p.Type, "seed " + seed + " corridor " + c.Id + " has a mirror");
+            }
+            Assert.GreaterOrEqual(mirrors, 40, "only " + mirrors + " mirrors over seeds 0..199");
+            Console.WriteLine("mirrors over seeds 0..199: " + mirrors);
+        }
+
+        [Test]
+        public void Validator_FlagsAMirrorAwayFromTheWall()
+        {
+            var layout = LevelGenerator.Generate(3);
+            Room room = null;
+            foreach (var r in layout.Rooms) if (r.Shape == RoomShape.Rectangle) { room = r; break; }
+            Assert.IsNotNull(room, "seed 3 has no rectangular room");
+            room.Props.Clear();
+            var d = RoomFurnisher.PropDims[PropType.Mirror];
+            // Halfway between the centre clearance and the north wall: not touching any wall.
+            double z = room.Center.Z + room.HalfZ * 0.5 + 0.9;
+            room.Props.Add(new Prop
+            {
+                Type = PropType.Mirror, Position = new Vec2(room.Center.X + room.HalfX * 0.5, Math.Min(z, room.Center.Z + room.HalfZ - 0.5)),
+                RotationDeg = 0, SizeX = d.SizeX, SizeZ = d.SizeZ, Height = d.Height
+            });
+            var errors = LevelValidator.Validate(layout);
+            bool flagged = false;
+            foreach (var e in errors) if (e.Contains("Mirror") && e.Contains("flush")) flagged = true;
+            Assert.IsTrue(flagged, "validator did not flag a free-standing mirror:\n  " + Join(errors));
+        }
+
+        [Test]
         public void Generate_BedsAndDesksAreFlushToAWall_OverSeeds0To499()
         {
             int checked_ = 0;
