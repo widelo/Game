@@ -1,7 +1,15 @@
 // Procedural "life" for rigid, unrigged enemy models (the boss is a static OBJ with no skeleton and no clips).
 // Sits on the enemy ROOT, never touches the root itself (the AI owns it), and only animates the visual child:
-// breathing, a speed-driven walk bob/sway, forward lean, smooth facing, random twitches, a lunge punch and a
-// weeping-angel freeze, plus a per-instance dark material whose emission pulses with the breath.
+// breathing, a speed-driven walk bob/sway, forward lean, smooth facing, random twitches, a proximity lunge
+// (anticipation -> strike -> recover) and a weeping-angel freeze, plus a per-instance dark material whose
+// emission pulses with the breath and flashes on the lunge strike.
+//
+// Lunge timeline (seconds from trigger, offsets on the model child's local pose only):
+//   0.00-0.18 anticipation: scale.y x0.92, lean -8 deg, pull back 0.15 m along -facing
+//   0.18-0.30 strike:       scale.y x1.10, lean +18 deg, thrust 0.35 m along facing, emission flash
+//   0.30-0.65 recover:      ease back to the walk pose. Walk bob is suppressed throughout.
+// Fired by TriggerLunge() (mood provider / attack event), by Mood.Lunge, or by Mood.Hunt within lungeDistance
+// of the player. 1.2 s cooldown after a lunge ends; a lunge in progress is never restarted.
 //
 // Driven by three inputs only: horizontal speed (root position delta, smoothed), Mood (written every frame by a
 // MonsterMoodProvider on the same root) and a hash-seeded System.Random for per-instance variation.
@@ -27,7 +35,11 @@ namespace Game.Enemy
         const float StepsPerMetre = 0.55f;                       // cadence proportional to speed
         const float SwayDegrees = 2f, MaxLeanHunt = 10f, MaxLeanWalk = 3f;
         const float AngularSpeed = 240f;
-        const float LungeSeconds = 0.25f, LungePunch = 0.12f, LungeLean = 14f;
+        const float LungeAnticipation = 0.18f, LungeStrike = 0.12f, LungeRecover = 0.35f, LungeCooldown = 1.2f;
+        const float LungeTotal = LungeAnticipation + LungeStrike + LungeRecover;
+        const float AnticScaleY = 0.92f, AnticLean = -8f, AnticPull = -0.15f;
+        const float StrikeScaleY = 1.10f, StrikeLean = 18f, StrikeThrust = 0.35f;
+        static readonly Color LungeFlash = new Color(1f, 0.1f, 0.05f);
         const float TeleportSpeed = 25f;                         // faster than this = warp, not walking
         static readonly Color BodyColour = new Color(0.08f, 0.07f, 0.09f);
         static readonly Color DimGlow = new Color(0.35f, 0.02f, 0.02f);
@@ -40,6 +52,8 @@ namespace Game.Enemy
 
         [Tooltip("Replace the model's materials with a per-instance dark URP Lit whose emission this component pulses.")]
         [SerializeField] bool overrideMaterial = true;
+        [Tooltip("In Hunt, the lunge fires when the player is within this horizontal distance (m).")]
+        [SerializeField] float lungeDistance = 3f;
 
         /// <summary>Set by a provider every frame (or by hand). Read in LateUpdate.</summary>
         public Mood Mood { get; set; } = Mood.Idle;
@@ -49,6 +63,11 @@ namespace Game.Enemy
         /// <summary>Smoothed horizontal speed of the root, m/s.</summary>
         public float Speed => _speed;
         public Mood CurrentMood => _mood;
+        public float LungeDistance { get => lungeDistance; set => lungeDistance = value; }
+        /// <summary>True from TriggerLunge until the recover phase ends.</summary>
+        public bool IsLunging => Time.time - _lungeStart < LungeTotal;
+        /// <summary>True when TriggerLunge would start a lunge now (not lunging, cooldown elapsed).</summary>
+        public bool LungeReady => !IsLunging && Time.time >= _nextLungeAt;
 
         Transform _model;
         Vector3 _basePos, _baseScale, _pivot;
@@ -63,7 +82,7 @@ namespace Game.Enemy
         float _speed, _worldYaw, _lean, _breathPhase, _walkPhase, _rateJitter, _glowJitter;
         float _nextTwitchAt, _twitchStart, _twitchDuration;
         Vector3 _twitchEuler;
-        float _lungeStart = -10f;
+        float _lungeStart = -100f, _nextLungeAt;
         Mood _mood = Mood.Idle;
         Color _glow;
         bool _bound;
@@ -105,6 +124,17 @@ namespace Game.Enemy
             TryBind();
         }
 
+        /// <summary>
+        /// Starts the anticipation+strike lunge. Ignored while a lunge is playing or during the 1.2 s cooldown
+        /// that follows one, so callers (mood rule, attack event) may fire it freely.
+        /// </summary>
+        public void TriggerLunge()
+        {
+            if (!LungeReady) return;
+            _lungeStart = Time.time;
+            _nextLungeAt = _lungeStart + LungeTotal + LungeCooldown;
+        }
+
         void OnDestroy()
         {
             RestoreMaterials();
@@ -129,7 +159,8 @@ namespace Game.Enemy
             _model = model;
             _basePos = model.localPosition;
             _baseRot = model.localRotation;
-            _baseScale = model.localScale;
+            _baseScale = model.localScale; // the model's own starting scale (e.g. a director's 0.8 X/Z squash) is the rest
+            _lastWrittenScale = _baseScale;
             // Pivot for scale/lean = the model's feet, so breathing and leaning do not lift it off the floor.
             Bounds b = ModelFit.RendererBounds(model.gameObject);
             float groundY = b.size.sqrMagnitude > 0f ? transform.InverseTransformPoint(b.min).y : _basePos.y;
@@ -205,7 +236,6 @@ namespace Game.Enemy
             bool unfreezeSnap = false;
             if (mood != _mood)
             {
-                if (mood == Mood.Lunge) _lungeStart = now;
                 if (_mood == Mood.Frozen) unfreezeSnap = true;
                 if (mood == Mood.Frozen) SetGlow(Color.black);
                 _mood = mood;
@@ -213,9 +243,17 @@ namespace Game.Enemy
             // Weeping-angel beat: hold the exact pose (world facing included), glow off. The root may still move.
             if (mood == Mood.Frozen)
             {
-                ComposePose(_lastBob, _lean, _lastRoll, _lastScaleK, _lastTwitch);
+                ComposePose(_lastBob, _lean, _lastRoll, _lastThrust, _lastScaleK, _lastTwitch);
                 return;
             }
+
+            // A director (or anything else) re-scaled the model since our last write: adopt it as the new rest scale.
+            if (_model.localScale != _lastWrittenScale) _baseScale = _model.localScale;
+
+            // ---- lunge triggers: Mood.Lunge, or Hunt with the player inside lungeDistance ----
+            if (mood == Mood.Lunge || (mood == Mood.Hunt && PlayerDistance(pos) < lungeDistance)) TriggerLunge();
+            LungeSample(now - _lungeStart, out float lungeScaleY, out float lungeLean, out float thrust,
+                        out float flash, out float lungeEnv);
 
             bool hunting = mood == Mood.Hunt || mood == Mood.Lunge;
 
@@ -228,20 +266,13 @@ namespace Game.Enemy
             // ---- walk cycle ----
             float moving = Mathf.Clamp01(_speed / 1.5f);
             _walkPhase = Wrap(_walkPhase + Mathf.PI * 2f * StepsPerMetre * _speed * dt);
-            float bob = Mathf.Min(MaxBob, BobPerSpeed * _speed) * Mathf.Abs(Mathf.Sin(_walkPhase));
+            float bob = Mathf.Min(MaxBob, BobPerSpeed * _speed) * Mathf.Abs(Mathf.Sin(_walkPhase)) * (1f - lungeEnv);
             float roll = SwayDegrees * moving * Mathf.Sin(_walkPhase); // one sway per two steps
 
             // ---- lean ----
             float leanTarget = mood == Mood.Hunt || mood == Mood.Lunge ? MaxLeanHunt * Mathf.Clamp01(_speed / 3f)
                              : mood == Mood.Prowl || mood == Mood.Alert ? MaxLeanWalk * Mathf.Clamp01(_speed / 3f)
                              : 0f;
-            float punch = 0f;
-            float lungeT = (now - _lungeStart) / LungeSeconds;
-            if (lungeT >= 0f && lungeT < 1f)
-            {
-                punch = Mathf.Sin(lungeT * Mathf.PI); // 0 -> 1 -> 0
-                leanTarget += LungeLean * punch;
-            }
             _lean = unfreezeSnap ? leanTarget : Mathf.Lerp(_lean, leanTarget, 1f - Mathf.Exp(-8f * dt));
 
             // ---- facing: toward the player when Alert/Hunt, else toward velocity, else the root's own facing ----
@@ -266,37 +297,90 @@ namespace Game.Enemy
                 twitch = Quaternion.Euler(_twitchEuler * w);
             }
 
-            float uniform = 1f + LungePunch * punch;
-            Vector3 scaleK = new Vector3(uniform, scaleY * uniform, uniform);
-            ComposePose(bob, _lean, roll, scaleK, twitch);
+            Vector3 scaleK = new Vector3(1f, scaleY * lungeScaleY, 1f);
+            ComposePose(bob, _lean + lungeLean, roll, thrust, scaleK, twitch);
 
             // ---- emission ----
             Color glow = hunting ? HuntGlow * (0.75f + 0.25f * breath01) : DimGlow * (0.35f + 0.65f * breath01);
-            SetGlow(Color.Lerp(_glow, glow * _glowJitter, unfreezeSnap ? 1f : 1f - Mathf.Exp(-6f * dt)));
+            SetGlow(Color.Lerp(_glow, glow * _glowJitter, unfreezeSnap ? 1f : 1f - Mathf.Exp(-6f * dt)), flash);
         }
 
-        Vector3 _lastScaleK = Vector3.one;
-        float _lastBob, _lastRoll;
+        /// <summary>
+        /// Lunge offsets at <paramref name="t"/> seconds after the trigger (rest values outside 0..LungeTotal).
+        /// env = 1 through anticipation+strike, easing to 0 over recover (walk-bob suppression weight).
+        /// </summary>
+        static void LungeSample(float t, out float scaleY, out float lean, out float thrust, out float flash, out float env)
+        {
+            scaleY = 1f; lean = 0f; thrust = 0f; flash = 0f; env = 0f;
+            if (t < 0f || t >= LungeTotal) return;
+            if (t < LungeAnticipation)
+            {
+                float u = Smooth(t / LungeAnticipation);
+                scaleY = Mathf.Lerp(1f, AnticScaleY, u);
+                lean = AnticLean * u;
+                thrust = AnticPull * u;
+                env = 1f;
+            }
+            else if (t < LungeAnticipation + LungeStrike)
+            {
+                float u = (t - LungeAnticipation) / LungeStrike;
+                u = 1f - (1f - u) * (1f - u); // ease-out: snaps forward, settles into the peak
+                scaleY = Mathf.Lerp(AnticScaleY, StrikeScaleY, u);
+                lean = Mathf.Lerp(AnticLean, StrikeLean, u);
+                thrust = Mathf.Lerp(AnticPull, StrikeThrust, u);
+                flash = u;
+                env = 1f;
+            }
+            else
+            {
+                float u = Smooth((t - LungeAnticipation - LungeStrike) / LungeRecover);
+                scaleY = Mathf.Lerp(StrikeScaleY, 1f, u);
+                lean = StrikeLean * (1f - u);
+                thrust = StrikeThrust * (1f - u);
+                flash = 1f - u;
+                env = 1f - u;
+            }
+        }
+
+        static float Smooth(float u) => u * u * (3f - 2f * u);
+
+        /// <summary>Horizontal distance from <paramref name="pos"/> to the player, +infinity when there is none.</summary>
+        static float PlayerDistance(Vector3 pos)
+        {
+            FirstPersonController player = Player;
+            if (player == null) return float.PositiveInfinity;
+            Vector3 d = player.transform.position - pos; d.y = 0f;
+            return d.magnitude;
+        }
+
+        Vector3 _lastScaleK = Vector3.one, _lastWrittenScale;
+        float _lastBob, _lastRoll, _lastThrust;
         Quaternion _lastTwitch = Quaternion.identity;
 
-        /// <summary>Writes the model's local pose: rest pose, scaled and rotated about the feet pivot, plus bob.</summary>
-        void ComposePose(float bob, float lean, float roll, Vector3 scaleK, Quaternion twitch)
+        /// <summary>
+        /// Writes the model's local pose: rest pose (incl. its starting localScale), scaled and rotated about the
+        /// feet pivot, plus bob and a thrust along the model's facing. Never touches the root.
+        /// </summary>
+        void ComposePose(float bob, float lean, float roll, float thrust, Vector3 scaleK, Quaternion twitch)
         {
-            _lastScaleK = scaleK; _lastBob = bob; _lastRoll = roll; _lastTwitch = twitch;
+            _lastScaleK = scaleK; _lastBob = bob; _lastRoll = roll; _lastThrust = thrust; _lastTwitch = twitch;
             float yawOffset = Mathf.DeltaAngle(transform.eulerAngles.y, _worldYaw);
-            Quaternion off = Quaternion.Euler(0f, yawOffset, 0f) * Quaternion.Euler(lean, 0f, roll) * twitch;
+            Quaternion yaw = Quaternion.Euler(0f, yawOffset, 0f);
+            Quaternion off = yaw * Quaternion.Euler(lean, 0f, roll) * twitch;
             Vector3 rel = _basePos - _pivot;
             Vector3 scaled = new Vector3(rel.x * scaleK.x, rel.y * scaleK.y, rel.z * scaleK.z);
-            _model.localPosition = _pivot + off * scaled + Vector3.up * bob;
+            _model.localPosition = _pivot + off * scaled + Vector3.up * bob + yaw * (Vector3.forward * thrust);
             _model.localRotation = off * _baseRot;
-            _model.localScale = Vector3.Scale(_baseScale, scaleK);
+            _lastWrittenScale = Vector3.Scale(_baseScale, scaleK);
+            _model.localScale = _lastWrittenScale;
         }
 
-        void SetGlow(Color c)
+        /// <summary>Sets the smoothed base glow and applies it, blended toward the lunge flash by <paramref name="flash"/>.</summary>
+        void SetGlow(Color c, float flash = 0f)
         {
             _glow = c;
             if (_material == null || _renderers == null) return;
-            _block.SetColor(EmissionId, c);
+            _block.SetColor(EmissionId, flash > 0f ? Color.Lerp(c, LungeFlash, flash) : c);
             for (int i = 0; i < _renderers.Length; i++)
                 if (_renderers[i] != null && _originalMaterials[i] != null) _renderers[i].SetPropertyBlock(_block);
         }

@@ -1,6 +1,7 @@
 // Mood for the A* stalker boss (CS462.StalkerAI.StalkerBoss), read-only: the boss's AI keeps every decision.
-//   Patrol -> Prowl, Investigate -> Alert, Chase -> Hunt (Lunge while winding up an attack, or when the player
-//   is within lungeDistance right after the chase starts), Disengage -> Idle.
+//   Patrol -> Prowl, Investigate -> Alert, Chase -> Hunt (Lunge while winding up an attack), Disengage -> Idle.
+//   The proximity lunge itself lives in MonsterAnimator (Hunt within its lungeDistance); this provider also fires
+//   MonsterAnimator.TriggerLunge() on the boss's onAttackWindup event so the strike lines up with the attack.
 //   Stalk -> Alert, except the GDD weeping-angel beat: while the player's camera looks within freezeAngle of
 //   the boss from farther than freezeMinDistance, it goes Frozen for at most maxFreezeSeconds, then back to
 //   Alert until the player looks away (which re-arms the freeze). Purely visual.
@@ -14,9 +15,6 @@ namespace Game.Enemy
         public float freezeAngle = 12f;
         public float freezeMinDistance = 4f;
         public float maxFreezeSeconds = 1.5f;
-        public float lungeDistance = 2.2f;
-        [Tooltip("A Chase younger than this counts as 'just started' for the proximity lunge.")]
-        public float lungeStateAge = 1.5f;
         [Tooltip("Height on the boss the freeze test aims at (chest).")]
         public float lookTargetHeight = 1.6f;
 
@@ -31,6 +29,21 @@ namespace Game.Enemy
             _boss = GetComponent<StalkerBoss>();
         }
 
+        void OnEnable()
+        {
+            if (_boss != null) _boss.onAttackWindup.AddListener(OnAttackWindup);
+        }
+
+        void OnDisable()
+        {
+            if (_boss != null) _boss.onAttackWindup.RemoveListener(OnAttackWindup);
+        }
+
+        void OnAttackWindup()
+        {
+            if (Animator != null) Animator.TriggerLunge();
+        }
+
         protected override Mood Evaluate()
         {
             if (_boss == null) return Mood.Idle;
@@ -42,8 +55,7 @@ namespace Game.Enemy
                 case StalkerState.Patrol: return Mood.Prowl;
                 case StalkerState.Investigate: return Mood.Alert;
                 case StalkerState.Stalk: return StalkMood();
-                case StalkerState.Chase:
-                    return PlayerDistance() < lungeDistance && _boss.StateAge < lungeStateAge ? Mood.Lunge : Mood.Hunt;
+                case StalkerState.Chase: return Mood.Hunt;
                 default: return Mood.Idle; // Disengage
             }
         }

@@ -5,7 +5,7 @@ using UnityEngine;
 namespace CS462.StalkerAI
 {
     [DisallowMultipleComponent, RequireComponent(typeof(CharacterController))]
-    public sealed class AStarMotor : MonoBehaviour
+    public sealed class AStarMotor : MonoBehaviour, IStalkerMotor
     {
         public AStarNavigation Navigation { get; private set; }
         public bool Arrived { get; private set; }

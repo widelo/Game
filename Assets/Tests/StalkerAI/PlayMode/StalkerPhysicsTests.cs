@@ -140,7 +140,9 @@ namespace CS462.StalkerAI.Tests
             while (!boss.WindingUp && Time.time < deadline) yield return null;
             Assert.IsTrue(boss.WindingUp, "Natural Patrol->Investigate->Stalk->Chase should reach windup.");
             Assert.AreEqual(100f, target.Health, "Proximity or starting an attack cannot instantly damage.");
-            player.transform.position = offset + Vector3.right * 4f; Physics.SyncTransforms();
+            // 6 m, not 4: since tuning revision 2 the windup is a lunge (attackLungeSpeed) and the strike reaches
+            // attackRange + attackReleaseReach (3.0 m by default), so a 4 m sidestep is no longer a guaranteed dodge.
+            player.transform.position = offset + Vector3.right * 6f; Physics.SyncTransforms();
             yield return new WaitForSeconds(settings.attackWindup + 0.05f);
             Assert.AreEqual(100f, target.Health, "Leaving range during windup should dodge.");
             Assert.AreEqual("MISS", boss.LastAttack);
