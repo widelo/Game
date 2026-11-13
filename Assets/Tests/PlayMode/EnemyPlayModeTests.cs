@@ -42,6 +42,10 @@ namespace LevelGen.Tests.PlayMode
             Transform player = fpc.transform;
 
             var spawner = Object.FindAnyObjectByType<EnemySpawner>();
+            // The placeholder enemy is switched off when the A* stalker director is installed in the scene;
+            // its own behaviour is covered by the StalkerAI test assemblies.
+            if (spawner != null && (!spawner.enabled || !spawner.spawnOnLevelBuilt))
+                Assert.Ignore("placeholder EnemySpawner is disabled in this scene (A* stalker installed)");
             if (spawner == null)
             {
                 spawner = new GameObject("EnemySpawner (test)").AddComponent<EnemySpawner>();

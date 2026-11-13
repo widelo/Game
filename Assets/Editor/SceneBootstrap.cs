@@ -81,7 +81,27 @@ namespace Game.Editor
         const string CorridorLightPrefabPath = "Assets/PolyKebap/LED Light Essentials Pack/Prefabs/ON/LED_Light_3.prefab";
 
         // ---- placeholder enemy (Game.Enemy assembly, resolved by name so the scene builds without it) ----
-        public const string MonsterModelPath = "Assets/Models/basicmonster.obj";
+        /// <summary>Enemy model, best first: the stalker ("Watcher") model when present, else the original monster.</summary>
+        public static readonly string[] MonsterModelCandidates =
+        {
+            "Assets/Models/WatcherV2.obj",
+            "Assets/Models/basicmonster.obj",
+        };
+        public static string MonsterModelPath
+        {
+            get
+            {
+                foreach (var path in MonsterModelCandidates)
+                    if (AssetDatabase.LoadAssetAtPath<GameObject>(path) != null) return path;
+                return MonsterModelCandidates[MonsterModelCandidates.Length - 1];
+            }
+        }
+
+        /// <summary>
+        /// When the A* stalker package is present, install its director into Main.unity (it disables the
+        /// placeholder EnemySpawner and reuses its model) so one scene carries the real AI AND the key/exit loop.
+        /// </summary>
+        public const bool InstallAStarEnemy = true;
         const string EnemySpawnerTypeName = "Game.Enemy.EnemySpawner";
         const string EnemyHudTypeName = "Game.Enemy.EnemyHud";
         const float MonsterHeight = 2.8f;
@@ -190,6 +210,18 @@ namespace Game.Editor
             DemoSettings.Apply();
 
             if (!Directory.Exists(SceneFolder)) Directory.CreateDirectory(SceneFolder);
+            if (InstallAStarEnemy)
+            {
+                var tools = FindType("CS462.StalkerAI.Editor.StalkerSceneTools");
+                var install = tools != null ? tools.GetMethod("Install", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static) : null;
+                if (install != null)
+                {
+                    install.Invoke(null, null);
+                    UnityEngine.Debug.Log("[SceneBootstrap] A* stalker director installed into Main.unity (placeholder EnemySpawner disabled)");
+                }
+                else UnityEngine.Debug.Log("[SceneBootstrap] A* stalker package not present; Main.unity keeps the placeholder enemy");
+            }
+
             EditorSceneManager.SaveScene(scene, ScenePath);
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
