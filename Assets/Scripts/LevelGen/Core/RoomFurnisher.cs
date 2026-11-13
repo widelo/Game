@@ -42,8 +42,31 @@ namespace LevelGen.Core
             { PropType.Bench,          new Dims(1.8, 0.5, 0.45) },
             { PropType.IvStand,        new Dims(0.4, 0.4, 1.80) },
             { PropType.Wheelchair,     new Dims(0.7, 1.0, 1.00) },
-            { PropType.Gurney,         new Dims(0.8, 2.0, 0.90) }
+            { PropType.Gurney,         new Dims(0.8, 2.0, 0.90) },
+            { PropType.Mirror,         new Dims(1.2, 0.08, 1.80) }
         };
+
+        /// <summary>
+        /// A Mirror's Height is the glass panel's height; the builder hangs it so the panel centre sits this
+        /// far above the floor (panel spans 0.6 .. 2.4 m). Its footprint is still reserved down to the floor.
+        /// </summary>
+        public const double MirrorCentreHeight = 1.5;
+
+        /// <summary>Chance that a room of each archetype gets one wall mirror (at most one per room).</summary>
+        public static double MirrorChance(RoomType type)
+        {
+            switch (type)
+            {
+                case RoomType.Office:
+                case RoomType.PatientRoom:
+                case RoomType.Lobby: return 0.60;
+                case RoomType.Ward:  return 0.30;
+                default:             return 0.0;
+            }
+        }
+
+        /// <summary>Mirrors keep this much clear of a wall's midpoint, where the optional wall sconce hangs.</summary>
+        public const double MirrorSconceGap = 0.30;
 
         // ---- shared constants, also used by LevelValidator so the two never disagree ----------------
         public const double CentreClearance = 1.5;      // no prop within 1.5 m of the room centre ...
@@ -289,7 +312,7 @@ namespace LevelGen.Core
         public static bool MustBeFlush(Room room, PropType type)
         {
             return room.Shape == RoomShape.Rectangle
-                   && (type == PropType.HospitalBed || type == PropType.Desk);
+                   && (type == PropType.HospitalBed || type == PropType.Desk || type == PropType.Mirror);
         }
 
         /// <summary>True when the box touches one of the four wall lines within WallTouchEps.</summary>
@@ -504,6 +527,31 @@ namespace LevelGen.Core
                 case RoomType.NurseStation:FurnishNurseStation(ctx); break;
                 case RoomType.Storage:     FurnishStorage(ctx); break;
                 default:                   FurnishLobby(ctx); break;
+            }
+            PlaceMirror(ctx);
+        }
+
+        /// <summary>
+        /// At most one wall mirror, rolled after the archetype's own furniture so it only takes leftover wall.
+        /// Rectangular rooms only: a flat panel cannot sit flush against an elliptical wall. The usual rules
+        /// (spacing, mouth lanes, walkability, flush) come from TryWallProp/Fits; on top of that the mirror
+        /// stays off the wall midpoint, where LightRoom may hang a sconce at 2.2 m.
+        /// </summary>
+        private static void PlaceMirror(Ctx ctx)
+        {
+            double chance = MirrorChance(ctx.Room.Type);
+            if (chance <= 0.0) return;
+            if (ctx.Rnd.NextDouble() >= chance) return;
+            var room = ctx.Room;
+            if (room.Shape != RoomShape.Rectangle) return;
+            double halfRun = PropDims[PropType.Mirror].SizeX * 0.5;
+            for (int a = 0; a < MaxAttempts; a++)
+            {
+                int wall = ctx.Rnd.Next(4);
+                double along = RandomAlong(ctx, PropType.Mirror, wall);
+                double mid = WallIsAlongX(wall) ? room.Center.X : room.Center.Z;
+                if (Math.Abs(along - mid) < halfRun + MirrorSconceGap) continue;
+                if (TryWallProp(ctx, PropType.Mirror, wall, along) != null) return;
             }
         }
 

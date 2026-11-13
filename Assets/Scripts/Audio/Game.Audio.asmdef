@@ -1,0 +1,14 @@
+{
+  "name": "Game.Audio",
+  "rootNamespace": "Game.Audio",
+  "references": [
+    "LevelGen.Core",
+    "LevelGen.Unity",
+    "Game.Player",
+    "Game.Objectives",
+    "Game.Enemy",
+    "StalkerAI.Core",
+    "StalkerAI.Runtime"
+  ],
+  "autoReferenced": true
+}

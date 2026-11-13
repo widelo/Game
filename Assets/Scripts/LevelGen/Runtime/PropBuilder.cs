@@ -30,6 +30,12 @@ namespace LevelGen.Unity
             root.transform.localPosition = new Vector3((float)prop.Position.X, 0f, (float)prop.Position.Z);
             root.transform.localRotation = Quaternion.Euler(0f, (float)prop.RotationDeg, 0f);
 
+            if (prop.Type == PropType.Mirror)
+            {
+                BuildMirror(root, sx, sz, h);
+                return root;
+            }
+
             switch (prop.Type)
             {
                 case PropType.HospitalBed: Bed(root.transform, sx, sz, h, mats, false); break;
@@ -211,6 +217,32 @@ namespace LevelGen.Unity
         {
             float ax = Mathf.Abs(v.x), ay = Mathf.Abs(v.y), az = Mathf.Abs(v.z);
             return ax >= ay && ax >= az ? 0 : (ay >= az ? 1 : 2);
+        }
+
+        // ---------------------------------------------------------------- mirror
+
+        /// <summary>
+        /// Wall mirror. Orientation convention (shared with RoomFurnisher.TryWallProp): a wall prop's local +Z
+        /// points AT the wall it is flush against, so the wall surface is at local z = +sz/2 and the room-facing
+        /// normal is the root's -Z. The glass (MirrorSurface) is hung with its centre at
+        /// RoomFurnisher.MirrorCentreHeight, so the panel spans 0.6 .. 2.4 m with the default 1.8 m height.
+        ///
+        /// Collision: one thin root BoxCollider over the whole footprint from the floor to the top of the
+        /// frame, so nothing slips under the panel; Not Walkable like every other prop.
+        /// </summary>
+        static void BuildMirror(GameObject root, float sx, float sz, float h)
+        {
+            float centre = (float)RoomFurnisher.MirrorCentreHeight;
+            Transform t = root.transform;
+            Vector3 wallPoint = t.TransformPoint(new Vector3(0f, 0f, sz * 0.5f));
+            Vector3 intoRoom = t.TransformDirection(Vector3.back);
+            MirrorSurface.Build(t, wallPoint, intoRoom, sx, h, centre);
+
+            float top = centre + h * 0.5f;
+            var bc = root.AddComponent<BoxCollider>();
+            bc.center = new Vector3(0f, top * 0.5f, 0f);
+            bc.size = new Vector3(sx, top, sz);
+            MarkNotWalkable(root);
         }
 
         // ---------------------------------------------------------------- shared collision / nav

@@ -28,7 +28,9 @@ namespace LevelGen.Core
         Bench,          // ~1.8 x 0.5, 0.45 high
         IvStand,        // ~0.4 x 0.4, 1.8 high (thin pole)
         Wheelchair,     // ~0.7 x 1.0, 1.0 high
-        Gurney          // ~0.8 x 2.0, 0.9 high (corridors)
+        Gurney,         // ~0.8 x 2.0, 0.9 high (corridors)
+        Mirror          // ~1.2 x 0.08, 1.8 high glass panel, wall-hung with its centre at 1.5 m (RoomFurnisher.MirrorCentreHeight).
+                        // Always flush to a wall with its local +Z toward the wall, so local -Z faces into the room.
     }
 
     /// <summary>

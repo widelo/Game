@@ -152,6 +152,10 @@ namespace Game.Enemy
 
             var enemy = go.AddComponent<EnemyAgent>();
             enemy.Initialise(CreateBrain(index), layout, builder, player, pos);
+
+            // Procedural life for the rigid model. Keep an explicitly assigned modelMaterial as authored.
+            var animator = MonsterAnimatorInstaller.Attach<PlaceholderMoodProvider>(go);
+            animator.OverrideMaterial = modelMaterial == null;
             return enemy;
         }
 

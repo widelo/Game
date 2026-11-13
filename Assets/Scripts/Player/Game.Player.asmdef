@@ -1,6 +1,6 @@
 {
   "name": "Game.Player",
   "rootNamespace": "Game.Player",
-  "references": [],
+  "references": ["LevelGen.Unity"],
   "autoReferenced": true
 }

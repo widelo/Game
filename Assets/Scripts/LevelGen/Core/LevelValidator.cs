@@ -327,8 +327,12 @@ namespace LevelGen.Core
                     if (!RoomFurnisher.ClearsAllLanes(r, mouths, p, laneWidth))
                         errors.Add($"Rooms[{i}].Props[{a}] ({p.Type}) intrudes on a corridor mouth lane ({laneWidth.ToString("R", ci)} m wide, prop inflated by {RoomFurnisher.LaneInflate})");
 
-                    // Beds and desks must read as pushed flush against a wall.
-                    if (RoomFurnisher.MustBeFlush(r, p.Type) && !RoomFurnisher.TouchesAWall(r, box))
+                    // Beds, desks and mirrors must read as pushed flush against a wall. A mirror is wall-hung, so it
+                    // is held to this in every room shape (an elliptical room can never satisfy it, so has none).
+                    bool flush = RoomFurnisher.MustBeFlush(r, p.Type) || p.Type == PropType.Mirror;
+                    if (r.Shape != RoomShape.Rectangle && p.Type == PropType.Mirror)
+                        errors.Add($"Rooms[{i}].Props[{a}] (Mirror) is in a non-rectangular room, so it cannot be flush against a wall");
+                    else if (flush && !RoomFurnisher.TouchesAWall(r, box))
                         errors.Add($"Rooms[{i}].Props[{a}] ({p.Type}) is not flush against a wall (within {RoomFurnisher.WallTouchEps} m)");
 
                     bool nurseCounter = r.Type == RoomType.NurseStation && p.Type == PropType.Counter;
