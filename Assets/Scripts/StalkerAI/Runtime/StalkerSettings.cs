@@ -1,13 +1,37 @@
 using System;
 using UnityEngine;
 
+// ---------------------------------------------------------------------------------------------------------------
+// Tuning revision 2 (2026-11-12, playtest: "clips through walls", "pathfinding broken", "fails to kill").
+// Player reference speeds: walk 5.0 m/s, sprint 8.0 m/s, health 100.
+//
+//   Setting                                   before   after   why
+//   NavigationSettings.bodyRadius             0.45     0.6     collision capsule matches the (narrowed) model
+//   StalkerSettings.chaseSpeed                6.3      7.4     closes on a walker, nearly holds a sprinter
+//   StalkerSettings.chaseDuration             12       25      chase cap ("max chase duration")
+//   StalkerSettings.disengagementCooldown     6        4       shorter lull after a disengage
+//   StalkerSettings.attackRange               1.65     2.4     windup starts from further out
+//   StalkerSettings.attackWindup              0.9      0.35    windup is a short lunge, not a long tell
+//   StalkerSettings.attackCooldown            2.5      1.2
+//   StalkerSettings.attackDamage              25       50      two hits kill (100 health)
+//   StalkerSettings.attackLungeSpeed          (new)    9       boss dashes at the player during the windup
+//   StalkerSettings.attackReleaseReach        (new)    0.6     strike connects within attackRange + this
+//   StalkerSettings.pointBlankRange           (new)    1.8     inside this, strike ignores FOV/eye-line
+//   AStarDirector.modelHeight                 2.8      2.5     head clears 3.0 m ceilings while breathing
+//   AStarDirector.modelWidthScale             (new)    0.8     visual X/Z squeeze toward the capsule
+//   AStarDirector.useNavMesh                  (new)    true    NavMeshAgent motor when a NavMesh is baked
+//
+// Scenes saved before revision 2 serialize the old numbers; AStarDirector.MigrateTuning() moves any field that
+// still holds its old default to the new one, once (tuningRevision), and leaves deliberate edits alone.
+// ---------------------------------------------------------------------------------------------------------------
+
 namespace CS462.StalkerAI
 {
     [Serializable]
     public sealed class NavigationSettings
     {
         [Min(0.2f)] public float cellSize = 0.75f;
-        [Min(0.1f)] public float bodyRadius = 0.45f;
+        [Min(0.1f)] public float bodyRadius = 0.6f;
         [Min(0.5f)] public float bodyHeight = 2.6f;
         [Min(0.01f)] public float wallMargin = 0.06f;
         [Tooltip("The inspected LevelLayout is flat, with floors at world Y=0.")]
@@ -53,7 +77,7 @@ namespace CS462.StalkerAI
         [Min(0.1f)] public float patrolSpeed = 2.0f;
         [Min(0.1f)] public float investigateSpeed = 3.0f;
         [Min(0.1f)] public float stalkSpeed = 2.6f;
-        [Min(0.1f)] public float chaseSpeed = 6.3f;
+        [Min(0.1f)] public float chaseSpeed = 7.4f;
         [Min(0.1f)] public float retreatSpeed = 3.8f;
         [Min(0.1f)] public float acceleration = 10f;
         [Min(1f)] public float turnSpeed = 200f;
@@ -92,18 +116,24 @@ namespace CS462.StalkerAI
 
         [Header("Chase and escape")]
         [Min(0.1f)] public float closeAggroDistance = 3.2f;
-        [Min(0.1f)] public float chaseDuration = 12f;
+        [Min(0.1f)] public float chaseDuration = 25f;
         [Min(0.1f)] public float loseSightDelay = 2.2f;
         [Min(0.1f)] public float chaseCooldown = 10f;
-        [Min(0.1f)] public float disengagementCooldown = 6f;
+        [Min(0.1f)] public float disengagementCooldown = 4f;
         [Min(1f)] public float retreatDistance = 10f;
 
         [Header("Attack: windup, hit check, recovery")]
-        [Min(0.1f)] public float attackRange = 1.65f;
-        [Min(0.1f)] public float attackWindup = 0.9f;
-        [Min(0.1f)] public float attackCooldown = 2.5f;
+        [Min(0.1f)] public float attackRange = 2.4f;
+        [Min(0.1f)] public float attackWindup = 0.35f;
+        [Min(0.1f)] public float attackCooldown = 1.2f;
         [Min(0.1f)] public float attackRecovery = 0.75f;
-        [Min(0.1f)] public float attackDamage = 25f;
+        [Min(0.1f)] public float attackDamage = 50f;
+        [Tooltip("Speed of the dash toward the player during the windup. 0 = stand still while winding up.")]
+        [Min(0f)] public float attackLungeSpeed = 9f;
+        [Tooltip("Extra reach when the strike resolves: it connects within attackRange + this.")]
+        [Min(0f)] public float attackReleaseReach = 0.6f;
+        [Tooltip("Within this flat distance the strike lands without FOV/eye-line (a wall between still blocks it).")]
+        [Min(0f)] public float pointBlankRange = 1.8f;
         [Range(5f, 180f)] public float attackHalfAngle = 45f;
         [Min(0.1f)] public float attackVerticalTolerance = 1.25f;
 
@@ -138,6 +168,21 @@ namespace CS462.StalkerAI
             attackCooldown = Mathf.Max(0.1f, attackCooldown); attackRecovery = Mathf.Max(0.1f, attackRecovery);
             attackDamage = Mathf.Max(0.1f, attackDamage); attackHalfAngle = Mathf.Clamp(attackHalfAngle, 5f, 180f);
             attackVerticalTolerance = Mathf.Max(0.1f, attackVerticalTolerance);
+            attackLungeSpeed = Mathf.Max(0f, attackLungeSpeed); attackReleaseReach = Mathf.Max(0f, attackReleaseReach);
+            pointBlankRange = Mathf.Max(0f, pointBlankRange);
+        }
+
+        /// <summary>Revision 1 -> 2: replace values that still equal the old defaults; keep deliberate edits.</summary>
+        public void MigrateFromRevision1()
+        {
+            static float Swap(float value, float old, float next) => Mathf.Approximately(value, old) ? next : value;
+            chaseSpeed = Swap(chaseSpeed, 6.3f, 7.4f);
+            chaseDuration = Swap(chaseDuration, 12f, 25f);
+            disengagementCooldown = Swap(disengagementCooldown, 6f, 4f);
+            attackRange = Swap(attackRange, 1.65f, 2.4f);
+            attackWindup = Swap(attackWindup, 0.9f, 0.35f);
+            attackCooldown = Swap(attackCooldown, 2.5f, 1.2f);
+            attackDamage = Swap(attackDamage, 25f, 50f);
         }
 
         static Vector2 Ordered(Vector2 value) => new Vector2(Mathf.Max(0.1f, value.x), Mathf.Max(0.1f, Mathf.Max(value.x, value.y)));

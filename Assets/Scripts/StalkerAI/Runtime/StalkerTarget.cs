@@ -12,6 +12,9 @@ namespace CS462.StalkerAI
         [Min(0f)] public float hitInvulnerability = 1f;
         public UnityEvent onHit = new UnityEvent();
         public UnityEvent onDefeated = new UnityEvent();
+        [Tooltip("Fired by AStarDirector after a lethal hit has been handled (player respawned at the level spawn " +
+                 "with full health when respawnOnDefeat is on). Hook HUD flashes / death stings here.")]
+        public UnityEvent onPlayerKilled = new UnityEvent();
         public event Action<StalkerTarget> Defeated;
         public float Health { get; private set; }
         public bool Alive => Health > 0f;

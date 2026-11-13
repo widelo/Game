@@ -1,4 +1,5 @@
 // Mood for the placeholder NavMeshAgent enemy (EnemyAgent + StalkerBrain), from EnemyAgent.StateName.
+// Entering "Attack" also fires MonsterAnimator.TriggerLunge() so the strike lines up with the attack.
 using UnityEngine;
 
 namespace Game.Enemy
@@ -6,6 +7,7 @@ namespace Game.Enemy
     public sealed class PlaceholderMoodProvider : MonsterMoodProvider
     {
         EnemyAgent _agent;
+        bool _wasAttacking;
 
         protected override void Awake()
         {
@@ -16,6 +18,9 @@ namespace Game.Enemy
         protected override Mood Evaluate()
         {
             if (_agent == null) return Mood.Idle;
+            bool attacking = _agent.StateName == "Attack";
+            if (attacking && !_wasAttacking) Animator.TriggerLunge();
+            _wasAttacking = attacking;
             switch (_agent.StateName) // string switch: compares, never allocates
             {
                 case "Patrol": return Mood.Prowl;

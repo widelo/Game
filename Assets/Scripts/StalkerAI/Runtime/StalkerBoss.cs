@@ -1,13 +1,15 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.AI;
 using UnityEngine.Events;
 
 namespace CS462.StalkerAI
 {
     public enum StalkerState { Patrol, Investigate, Stalk, Chase, Disengage }
 
-    [DisallowMultipleComponent, RequireComponent(typeof(AStarMotor))]
+    /// <summary>Stalker FSM. Needs an <see cref="IStalkerMotor"/> (AStarMotor or NavMeshStalkerMotor) on the same object.</summary>
+    [DisallowMultipleComponent]
     public sealed class StalkerBoss : MonoBehaviour
     {
         public StalkerSettings settings = new StalkerSettings();
@@ -18,7 +20,9 @@ namespace CS462.StalkerAI
 
         public StalkerState State { get; private set; }
         public StalkerPerception Senses { get; private set; }
-        public AStarMotor Motor { get; private set; }
+        public IStalkerMotor Motor { get; private set; }
+        /// <summary>True when the motor is the NavMesh one: goals snap to the NavMesh and the A* grid is not needed.</summary>
+        public bool UsesNavMesh => navMesh;
         public bool WindingUp => windingUp;
         public string LastAttack { get; private set; } = "none";
         public float StateAge => Time.time - enteredAt;
@@ -33,7 +37,7 @@ namespace CS462.StalkerAI
         float chaseAt, nextChaseAt, nextAttackAt, windupEnds, recoveryEnds;
         float lastInvestigationObservation;
         Vector3 retreatFrom, attackDirection;
-        bool ready, windingUp, searchingArea;
+        bool ready, windingUp, searchingArea, navMesh;
 
         public void Initialise(AStarNavigation navigation, Transform playerRoot, StalkerTarget damageTarget,
                                IReadOnlyList<Vector3> patrol, StalkerSettings behavior, int seed)
@@ -42,11 +46,25 @@ namespace CS462.StalkerAI
             settings = behavior; settings.Validate();
             settings.eyeHeight = Mathf.Min(settings.eyeHeight, world.Settings.bodyHeight - 0.1f);
             random = new System.Random(seed);
-            Motor = GetComponent<AStarMotor>(); Motor.Initialise(world, settings);
+            Motor = GetComponent<IStalkerMotor>();
+            if (Motor == null) { UnityEngine.Debug.LogError("[Stalker] No IStalkerMotor (AStarMotor or NavMeshStalkerMotor) on the stalker.", this); return; }
+            navMesh = Motor is NavMeshStalkerMotor;
+            if (Motor is AStarMotor gridMotor) gridMotor.Initialise(world, settings);
+            else if (Motor is NavMeshStalkerMotor meshMotor) meshMotor.Initialise(settings);
             Senses = new StalkerPerception(transform, player, world, settings, random);
-            if (!world.TryNode(transform.position, world.Settings.endpointSnapDistance, out int spawn))
-            { UnityEngine.Debug.LogError("[Stalker] Spawn has no valid navigation cell.", this); return; }
-            component = world.Components[spawn];
+            if (navMesh)
+            {
+                // The A* grid is never built on this path; `world` is only used for line-of-sight raycasts.
+                component = -1;
+                if (!NavMesh.SamplePosition(transform.position, out _, NavMeshStalkerMotor.SnapDistance, NavMesh.AllAreas))
+                { UnityEngine.Debug.LogError("[Stalker] Spawn is not on the NavMesh.", this); return; }
+            }
+            else
+            {
+                if (!world.TryNode(transform.position, world.Settings.endpointSnapDistance, out int spawn))
+                { UnityEngine.Debug.LogError("[Stalker] Spawn has no valid navigation cell.", this); return; }
+                component = world.Components[spawn];
+            }
             ready = true; Enter(StalkerState.Patrol, true);
         }
 
@@ -65,7 +83,7 @@ namespace CS462.StalkerAI
 
         void Update()
         {
-            if (!ready || world == null || !world.Ready) return;
+            if (!ready || world == null || (!navMesh && !world.Ready)) return;
             float dt = Time.deltaTime;
             if (target != null && !target.Alive && State != StalkerState.Disengage)
                 ForceDisengage();
@@ -75,7 +93,7 @@ namespace CS462.StalkerAI
             if (State == StalkerState.Chase && (StateAge >= settings.chaseDuration || !Senses.HasMemory))
                 Enter(StalkerState.Disengage);
 
-            if (TickAttack()) { Motor.Tick(dt, 0f, true); return; }
+            if (TickAttack(dt)) return; // TickAttack drives the motor itself (lunge or recovery hold).
             switch (State)
             {
                 case StalkerState.Patrol: TickPatrol(dt); break;
@@ -125,8 +143,8 @@ namespace CS462.StalkerAI
             {
                 int pick = (start + offset) % patrolPoints.Count;
                 if (pick == patrolIndex && patrolPoints.Count > 1) continue;
-                if (!world.TryNode(patrolPoints[pick], world.Settings.endpointSnapDistance, out int node, component)) continue;
-                patrolIndex = pick; Motor.SetGoal(world.World(node)); return;
+                if (!TrySnap(patrolPoints[pick], world.Settings.endpointSnapDistance, out Vector3 goal)) continue;
+                patrolIndex = pick; Motor.SetGoal(goal); return;
             }
             pauseUntil = Time.time + Range(settings.patrolPause);
         }
@@ -153,7 +171,7 @@ namespace CS462.StalkerAI
             {
                 nextSearchPoint = Time.time + 1f;
                 Vector3 p = Senses.LastKnown + Direction(Range(0f, 360f)) * Range(0.5f, settings.searchRadius);
-                if (world.TryNode(p, world.Settings.endpointSnapDistance, out int node, component)) Motor.SetGoal(world.World(node));
+                if (TrySnap(p, world.Settings.endpointSnapDistance, out Vector3 goal)) Motor.SetGoal(goal);
             }
         }
 
@@ -185,8 +203,7 @@ namespace CS462.StalkerAI
             {
                 float distance = Mathf.Max(1f, settings.preferredStalkDistance + Range(-settings.stalkDistanceTolerance, settings.stalkDistanceTolerance));
                 Vector3 wish = Senses.LastKnown + Direction(offset + i * 360f / settings.positionCandidates) * distance;
-                if (!world.TryNode(wish, world.Settings.cellSize, out int node, component)) continue;
-                Vector3 point = world.World(node);
+                if (!TrySnap(wish, world.Settings.cellSize, out Vector3 point)) continue;
                 bool headVisible = world.ClearSight(point + Vector3.up * settings.eyeHeight, rememberedEye);
                 bool bodyVisible = world.ClearSight(point + Vector3.up * 0.9f, rememberedEye);
                 float cover = !bodyVisible && headVisible ? settings.concealmentPreference
@@ -206,7 +223,7 @@ namespace CS462.StalkerAI
             { Enter(StalkerState.Investigate); return; }
             if (Time.time >= nextAttackAt && CanHitNow(false))
             {
-                Motor.Stop();
+                // No Motor.Stop(): the windup is a lunge that keeps the chase momentum (see TickAttack).
                 attackDirection = player.position - transform.position; attackDirection.y = 0f;
                 if (attackDirection.sqrMagnitude < 0.001f) attackDirection = transform.forward;
                 attackDirection.Normalize();
@@ -217,30 +234,54 @@ namespace CS462.StalkerAI
             Motor.SetGoal(Senses.LastKnown);
         }
 
-        bool TickAttack()
+        bool TickAttack(float dt)
         {
             if (State != StalkerState.Chase) return false;
             if (windingUp)
             {
-                if (Time.time < windupEnds) return true;
+                if (Time.time < windupEnds)
+                {
+                    // Windup is a dash at the player's live position, not a stand-still.
+                    if (settings.attackLungeSpeed > 0f && player != null)
+                    { Motor.SetGoal(player.position); Motor.Tick(dt, settings.attackLungeSpeed, false); }
+                    else Motor.Tick(dt, 0f, true);
+                    return true;
+                }
                 windingUp = false; nextAttackAt = Time.time + settings.attackCooldown;
                 recoveryEnds = Time.time + settings.attackRecovery;
+                // The strike lands where the boss is facing after the lunge (the motor turned it while moving).
+                attackDirection = transform.forward; attackDirection.y = 0f;
+                if (attackDirection.sqrMagnitude < 0.0001f) attackDirection = Vector3.forward;
+                attackDirection.Normalize();
                 bool hit = CanHitNow(true) && target != null && target.TakeDamage(settings.attackDamage);
                 LastAttack = hit ? "HIT" : "MISS";
                 if (hit) onAttackHit.Invoke(); else onAttackMiss.Invoke();
+                Motor.Tick(dt, 0f, true);
                 return true;
             }
-            return Time.time < recoveryEnds;
+            if (Time.time < recoveryEnds) { Motor.Tick(dt, 0f, true); return true; }
+            return false;
         }
 
-        bool CanHitNow(bool requireAttackArc)
+        /// <param name="release">False: may a windup start (needs sight + attackRange).
+        /// True: does the strike connect at the end of the windup.</param>
+        bool CanHitNow(bool release)
         {
-            if (player == null || target == null || !target.Alive || target.Protected || !Senses.CanSeePlayerNow()) return false;
+            if (player == null || target == null || !target.Alive || target.Protected) return false;
             Vector3 delta = player.position - transform.position;
             if (Mathf.Abs(delta.y) > settings.attackVerticalTolerance) return false;
             delta.y = 0f;
-            if (delta.sqrMagnitude > settings.attackRange * settings.attackRange) return false;
-            return !requireAttackArc || delta.sqrMagnitude < 0.0001f
+            float distanceSquared = delta.sqrMagnitude;
+            // Point blank: no FOV/eye-line requirement, only that no wall separates the two bodies at chest height.
+            if (release && distanceSquared <= settings.pointBlankRange * settings.pointBlankRange)
+            {
+                Vector3 chest = transform.position + Vector3.up * 1f;
+                return world.ClearSight(chest, new Vector3(player.position.x, chest.y, player.position.z));
+            }
+            if (!Senses.CanSeePlayerNow()) return false;
+            float reach = settings.attackRange + (release ? settings.attackReleaseReach : 0f);
+            if (distanceSquared > reach * reach) return false;
+            return !release || distanceSquared < 0.0001f
                 || Vector3.Dot(attackDirection, delta.normalized) >= Mathf.Cos(settings.attackHalfAngle * Mathf.Deg2Rad);
         }
 
@@ -260,8 +301,7 @@ namespace CS462.StalkerAI
             {
                 float angle = baseAngle + Range(-105f, 105f);
                 Vector3 wish = transform.position + Direction(angle) * Range(settings.retreatDistance * 0.4f, settings.retreatDistance);
-                if (!world.TryNode(wish, world.Settings.cellSize, out int node, component)) continue;
-                Vector3 p = world.World(node);
+                if (!TrySnap(wish, world.Settings.cellSize, out Vector3 p)) continue;
                 float value = FlatDistance(p, retreatFrom) - FlatDistance(p, transform.position) * 0.2f;
                 if (!world.ClearSight(p + Vector3.up * settings.eyeHeight, retreatFrom + Vector3.up)) value += 3f;
                 if (value > score) { score = value; best = p; }
@@ -300,6 +340,20 @@ namespace CS462.StalkerAI
             }
             if (settings.logStateChanges) UnityEngine.Debug.Log($"[Stalker] {name}: {next}", this);
             StateChanged?.Invoke(this, next);
+        }
+
+        /// <summary>Snap a wished-for point to somewhere the active motor can stand.</summary>
+        bool TrySnap(Vector3 point, float radius, out Vector3 snapped)
+        {
+            snapped = default;
+            if (navMesh)
+            {
+                // The level is flat (floors at NavigationSettings.floorY); project first so eye/root heights don't count.
+                if (!NavMesh.SamplePosition(world.OnFloor(point), out NavMeshHit hit, Mathf.Max(radius, 0.5f), NavMesh.AllAreas)) return false;
+                snapped = hit.position; return true;
+            }
+            if (!world.TryNode(point, radius, out int node, component)) return false;
+            snapped = world.World(node); return true;
         }
 
         void Scan(float dt) { transform.Rotate(Vector3.up, settings.turnSpeed * 0.18f * dt, Space.World); }
